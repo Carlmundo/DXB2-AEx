@@ -1,0 +1,69 @@
+// Tests config parsing and executes the original splash update in an isolated
+// mapping. No game launch, rendering, settings, or saves are involved.
+#include "config.hpp"
+#include "skip-longbow.hpp"
+#include "verified-game.hpp"
+#include <sstream>
+
+static void Require(bool condition,const char* message) {
+  if(!condition)throw std::runtime_error(message);
+}
+
+static void CheckConfig(const std::string& text,bool log,bool skip) {
+  std::istringstream input(text);
+  const auto config=ReadAexConfig(input);
+  Require(config.log==log&&config.skipLongbow==skip,"Incorrect config settings");
+}
+
+static DWORD gTickCalls=0;
+static DWORD gElapsed=0;
+static DWORD WINAPI Ticks() {return gTickCalls++?gElapsed:0;}
+
+int wmain(int argc,wchar_t** argv) {
+  if(argc!=2){std::fprintf(stderr,"Usage: startup-tests.exe path-to-DXBall2.exe\n");return 2;}
+  try {
+    CheckConfig("",false,false);
+    for(const char* key:{"Log","SkipLongbow"}) {
+      for(const char* value:{"0","2","true","01","1junk","","1 = 1"})
+        CheckConfig(std::string(key)+" = "+value,false,false);
+      const bool log=std::strcmp(key,"Log")==0;
+      CheckConfig(std::string(key)+"=1",log,!log);
+      CheckConfig(std::string("\xef\xbb\xbf# config\r\n\r\n\t")+key+" \t= \t1 \t# comment\r\n",log,!log);
+      CheckConfig(std::string(key)+"=1\n"+key+"=0",false,false);
+      CheckConfig(std::string(key)+"=0\n"+key+"=1",log,!log);
+    }
+    for(int log=0;log<2;log++)for(int skip=0;skip<2;skip++)
+      CheckConfig("Log="+std::to_string(log)+"\nSkipLongbow="+std::to_string(skip),log!=0,skip!=0);
+    CheckConfig("# Log=1\n# SkipLongbow=1\nOtherLog=1\nOtherSkipLongbow=1\nlog=1\nskiplongbow=1",false,false);
+    CheckConfig("SkipLongbow=1\nLog=1\nLog=0",false,true);
+    CheckConfig("Log=1\nSkipLongbow=1\nSkipLongbow=0",true,false);
+    std::istringstream failed("Log=1\nSkipLongbow=1");failed.setstate(std::ios::badbit);
+    const auto config=ReadAexConfig(failed);
+    Require(!config.log&&!config.skipLongbow,"Unreadable config must disable both settings");
+    std::puts("PASS: config defaults, independent settings, exact values, comments, BOM, duplicate keys, and read errors");
+
+    Require(VerifiedGame(argv[1]),"Unsupported executable hash");
+    auto module=LoadLibraryExW(argv[1],nullptr,DONT_RESOLVE_DLL_REFERENCES);
+    Require(module!=nullptr,"Could not map game executable");
+    auto* base=reinterpret_cast<uint8_t*>(module);
+    VerifySkipLongbow(base);
+    const auto ticks=&Ticks;WriteMemory(base+0x15f310,&ticks,sizeof(ticks));
+    auto& state=*reinterpret_cast<int*>(base+0x1a7074);
+    auto& previous=*reinterpret_cast<int*>(base+0x1a4090);
+    auto& input=*reinterpret_cast<int*>(base+0x1b93b8);
+    auto& key=*(base+0x1a719d);
+    const auto update=reinterpret_cast<int (__cdecl*)()>(base+0x99a00);
+    state=0;previous=-1;input=0;key=0;gTickCalls=0;gElapsed=5001;
+    Require(update()==1&&state==2&&gTickCalls==2,"Original timed splash transition failed");
+    state=0;previous=-1;input=1;gTickCalls=0;
+    Require(update()==1&&state==2&&gTickCalls==1,"Original input splash transition failed");
+    InstallSkipLongbow(base);
+    state=0;previous=-1;input=0;key=0;gTickCalls=0;gElapsed=0;
+    Require(update()==1&&state==2&&gTickCalls==1,"Enabled skip did not reach title immediately without input");
+    state=0;previous=0;gTickCalls=0;
+    Require(update()==1&&state==2&&gTickCalls==0,"Enabled skip failed when splash was already active");
+    std::puts("PASS: original splash timeout/input transitions and immediate title transition with SkipLongbow");
+    FreeLibrary(module);
+    return 0;
+  }catch(const std::exception& error){std::fprintf(stderr,"%s\n",error.what());return 1;}
+}

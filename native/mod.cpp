@@ -3,6 +3,8 @@
 #include "board-format.hpp"
 #include "geometry.hpp"
 #include "save-format.hpp"
+#include "config.hpp"
+#include "skip-longbow.hpp"
 #include <intrin.h>
 #include <fstream>
 
@@ -19,28 +21,11 @@ static thread_local const void* gSaveNormalized=nullptr;
 static thread_local int gSaveNormalizedLength=0;
 static thread_local uint32_t gSaveChecksum=0;
 
-static bool ReadLogSetting(const wchar_t* path) noexcept {
+static AexConfig ReadConfig(const wchar_t* path) noexcept {
   try {
     std::ifstream config(path);
-    bool enabled=false;
-    std::string line;
-    bool firstLine=true;
-    while(std::getline(config,line)) {
-      if(firstLine&&line.compare(0,3,"\xef\xbb\xbf")==0)line.erase(0,3);
-      firstLine=false;
-      const auto comment=line.find('#');
-      if(comment!=std::string::npos)line.erase(comment);
-      const auto equals=line.find('=');
-      if(equals==std::string::npos)continue;
-      const auto trim=[](const std::string& text) {
-        const auto first=text.find_first_not_of(" \t\r\n");
-        if(first==std::string::npos)return std::string{};
-        return text.substr(first,text.find_last_not_of(" \t\r\n")-first+1);
-      };
-      if(trim(line.substr(0,equals))=="Log")enabled=trim(line.substr(equals+1))=="1";
-    }
-    return !config.bad()&&enabled;
-  }catch(...){return false;}
+    return ReadAexConfig(config);
+  }catch(...){return {};}
 }
 
 static void Log(const char* message) noexcept {
@@ -148,7 +133,8 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
   auto slash=wcsrchr(gLogPath,L'\\');
   if(!slash)return TRUE;
   const auto remaining=MAX_PATH-static_cast<size_t>(slash+1-gLogPath);
-  wcscpy_s(slash+1,remaining,L"aex.cfg");gLoggingEnabled=ReadLogSetting(gLogPath);
+  wcscpy_s(slash+1,remaining,L"aex.cfg");
+  const auto config=ReadConfig(gLogPath);gLoggingEnabled=config.log;
   wcscpy_s(slash+1,remaining,L"aex.log");
   wchar_t executable[MAX_PATH];if(!GetModuleFileNameW(nullptr,executable,MAX_PATH))return TRUE;
   if(!VerifiedGame(executable)) {Log("Unsupported executable: native mod disabled; original game left unchanged.");return TRUE;}
@@ -158,6 +144,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     if(gGame[0x90060]!=5||gGame[0x91655]!=5||*reinterpret_cast<uint32_t*>(gGame+0x90598)!=26||*reinterpret_cast<uint32_t*>(gGame+0x90540)!=0x820)
       throw std::runtime_error("Unexpected save format operands");
     if(gGame[0x55e44]!=0x74||gGame[0x55e45]!=0x50)throw std::runtime_error("Unexpected plain-BDST branch");
+    if(config.skipLongbow)VerifySkipLongbow(gGame);
     ApplyGridPatches(gGame);
     ReplaceCall(0x55e56,reinterpret_cast<void*>(&DecodeBoard),0xab8c0);
     ReplaceCall(0x55ef4,reinterpret_cast<void*>(&BoardChecksum),0xab700);
@@ -172,6 +159,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     gGeometry.Install();
     // Route raw and encoded board files through the same validated adapter.
     const uint8_t nops[2]={0x90,0x90};WriteMemory(gGame+0x55e44,nops,2);
+    if(config.skipLongbow){InstallSkipLongbow(gGame);Log("Longbow Games startup logo skipped.");}
     AddVectoredExceptionHandler(1,Fault);
     Log("DX-Ball 2 AEx experimental native grid and board adapter installed.");
   } catch(const std::exception& error) {Log(error.what());return FALSE;}
