@@ -21,5 +21,7 @@ cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /Fo:build\ /Fe:build\save-format-tests.e
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\startup-tests.exe native\startup-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\transition-tests.exe native\transition-tests.cpp /link /DYNAMICBASE /NXCOMPAT
+if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /LD /I .scratch /Fo:build\ /Fe:build\version.dll native\mod.cpp /link /DEF:native\version.def /DYNAMICBASE /NXCOMPAT
 exit /b %errorlevel%

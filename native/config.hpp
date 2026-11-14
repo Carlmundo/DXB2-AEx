@@ -5,6 +5,7 @@
 struct AexConfig {
   bool log=false;
   bool skipLongbow=false;
+  bool noScreenTransition=false;
 };
 
 inline AexConfig ReadAexConfig(std::istream& config) noexcept {
@@ -28,6 +29,7 @@ inline AexConfig ReadAexConfig(std::istream& config) noexcept {
       const auto enabled=trim(line.substr(equals+1))=="1";
       if(key=="Log")settings.log=enabled;
       else if(key=="SkipLongbow")settings.skipLongbow=enabled;
+      else if(key=="NoScreenTransition")settings.noScreenTransition=enabled;
     }
     return config.bad()?AexConfig{}:settings;
   }catch(...){return {};}

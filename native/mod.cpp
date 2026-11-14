@@ -5,6 +5,7 @@
 #include "save-format.hpp"
 #include "config.hpp"
 #include "skip-longbow.hpp"
+#include "screen-transition.hpp"
 #include <intrin.h>
 #include <fstream>
 
@@ -145,6 +146,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
       throw std::runtime_error("Unexpected save format operands");
     if(gGame[0x55e44]!=0x74||gGame[0x55e45]!=0x50)throw std::runtime_error("Unexpected plain-BDST branch");
     if(config.skipLongbow)VerifySkipLongbow(gGame);
+    if(config.noScreenTransition)VerifyNoScreenTransition(gGame);
     ApplyGridPatches(gGame);
     ReplaceCall(0x55e56,reinterpret_cast<void*>(&DecodeBoard),0xab8c0);
     ReplaceCall(0x55ef4,reinterpret_cast<void*>(&BoardChecksum),0xab700);
@@ -160,6 +162,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     // Route raw and encoded board files through the same validated adapter.
     const uint8_t nops[2]={0x90,0x90};WriteMemory(gGame+0x55e44,nops,2);
     if(config.skipLongbow){InstallSkipLongbow(gGame);Log("Longbow Games startup logo skipped.");}
+    if(config.noScreenTransition){InstallNoScreenTransition(gGame);Log("Screen transition animations disabled.");}
     AddVectoredExceptionHandler(1,Fault);
     Log("DX-Ball 2 AEx experimental native grid and board adapter installed.");
   } catch(const std::exception& error) {Log(error.what());return FALSE;}

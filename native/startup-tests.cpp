@@ -9,10 +9,10 @@ static void Require(bool condition,const char* message) {
   if(!condition)throw std::runtime_error(message);
 }
 
-static void CheckConfig(const std::string& text,bool log,bool skip) {
+static void CheckConfig(const std::string& text,bool log,bool skip,bool noTransition=false) {
   std::istringstream input(text);
   const auto config=ReadAexConfig(input);
-  Require(config.log==log&&config.skipLongbow==skip,"Incorrect config settings");
+  Require(config.log==log&&config.skipLongbow==skip&&config.noScreenTransition==noTransition,"Incorrect config settings");
 }
 
 static DWORD gTickCalls=0;
@@ -23,23 +23,26 @@ int wmain(int argc,wchar_t** argv) {
   if(argc!=2){std::fprintf(stderr,"Usage: startup-tests.exe path-to-DXBall2.exe\n");return 2;}
   try {
     CheckConfig("",false,false);
-    for(const char* key:{"Log","SkipLongbow"}) {
+    for(const char* key:{"Log","SkipLongbow","NoScreenTransition"}) {
       for(const char* value:{"0","2","true","01","1junk","","1 = 1"})
         CheckConfig(std::string(key)+" = "+value,false,false);
       const bool log=std::strcmp(key,"Log")==0;
-      CheckConfig(std::string(key)+"=1",log,!log);
-      CheckConfig(std::string("\xef\xbb\xbf# config\r\n\r\n\t")+key+" \t= \t1 \t# comment\r\n",log,!log);
+      const bool skip=std::strcmp(key,"SkipLongbow")==0;
+      const bool noTransition=std::strcmp(key,"NoScreenTransition")==0;
+      CheckConfig(std::string(key)+"=1",log,skip,noTransition);
+      CheckConfig(std::string("\xef\xbb\xbf# config\r\n\r\n\t")+key+" \t= \t1 \t# comment\r\n",log,skip,noTransition);
       CheckConfig(std::string(key)+"=1\n"+key+"=0",false,false);
-      CheckConfig(std::string(key)+"=0\n"+key+"=1",log,!log);
+      CheckConfig(std::string(key)+"=0\n"+key+"=1",log,skip,noTransition);
     }
-    for(int log=0;log<2;log++)for(int skip=0;skip<2;skip++)
-      CheckConfig("Log="+std::to_string(log)+"\nSkipLongbow="+std::to_string(skip),log!=0,skip!=0);
-    CheckConfig("# Log=1\n# SkipLongbow=1\nOtherLog=1\nOtherSkipLongbow=1\nlog=1\nskiplongbow=1",false,false);
+    for(int log=0;log<2;log++)for(int skip=0;skip<2;skip++)for(int noTransition=0;noTransition<2;noTransition++)
+      CheckConfig("Log="+std::to_string(log)+"\nSkipLongbow="+std::to_string(skip)+"\nNoScreenTransition="+std::to_string(noTransition),log!=0,skip!=0,noTransition!=0);
+    CheckConfig("# Log=1\n# SkipLongbow=1\n# NoScreenTransition=1\nOtherLog=1\nOtherSkipLongbow=1\nOtherNoScreenTransition=1\nlog=1\nskiplongbow=1\nnoscreentransition=1",false,false);
     CheckConfig("SkipLongbow=1\nLog=1\nLog=0",false,true);
     CheckConfig("Log=1\nSkipLongbow=1\nSkipLongbow=0",true,false);
-    std::istringstream failed("Log=1\nSkipLongbow=1");failed.setstate(std::ios::badbit);
+    CheckConfig("Log=1\nSkipLongbow=1\nNoScreenTransition=1\nNoScreenTransition=0",true,true,false);
+    std::istringstream failed("Log=1\nSkipLongbow=1\nNoScreenTransition=1");failed.setstate(std::ios::badbit);
     const auto config=ReadAexConfig(failed);
-    Require(!config.log&&!config.skipLongbow,"Unreadable config must disable both settings");
+    Require(!config.log&&!config.skipLongbow&&!config.noScreenTransition,"Unreadable config must disable all settings");
     std::puts("PASS: config defaults, independent settings, exact values, comments, BOM, duplicate keys, and read errors");
 
     Require(VerifiedGame(argv[1]),"Unsupported executable hash");
