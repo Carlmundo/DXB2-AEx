@@ -2,7 +2,7 @@
 Anniversary Extras for DX-Ball 2: 20th Anniversary Edition
 
 ## Install
-1. [Download the latest version](releases/latest)
+1. [Download the latest version](https://github.com/Carlmundo/DXB2-AEx/releases/latest)
 2. Extract the .zip and place the files in the game folder.
 
 ## Features
