@@ -1,0 +1,8 @@
+.scratch/
+build/
+docs/
+*.obj
+*.pdb
+*.ilk
+*.log
+README.md
