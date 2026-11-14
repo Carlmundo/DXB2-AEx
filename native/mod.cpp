@@ -4,10 +4,12 @@
 #include "geometry.hpp"
 #include "save-format.hpp"
 #include <intrin.h>
+#include <fstream>
 
 static uint8_t* gGame=nullptr;
 static Geometry gGeometry;
 static wchar_t gLogPath[MAX_PATH]={};
+static bool gLoggingEnabled=false;
 static FARPROC gVersion[17]={};
 static const char* kVersionExports[]={"GetFileVersionInfoA","GetFileVersionInfoByHandle","GetFileVersionInfoExA","GetFileVersionInfoExW","GetFileVersionInfoSizeA","GetFileVersionInfoSizeExA","GetFileVersionInfoSizeExW","GetFileVersionInfoSizeW","GetFileVersionInfoW","VerFindFileA","VerFindFileW","VerInstallFileA","VerInstallFileW","VerLanguageNameA","VerLanguageNameW","VerQueryValueA","VerQueryValueW"};
 static thread_local const void* gNormalized=nullptr;
@@ -17,7 +19,32 @@ static thread_local const void* gSaveNormalized=nullptr;
 static thread_local int gSaveNormalizedLength=0;
 static thread_local uint32_t gSaveChecksum=0;
 
+static bool ReadLogSetting(const wchar_t* path) noexcept {
+  try {
+    std::ifstream config(path);
+    bool enabled=false;
+    std::string line;
+    bool firstLine=true;
+    while(std::getline(config,line)) {
+      if(firstLine&&line.compare(0,3,"\xef\xbb\xbf")==0)line.erase(0,3);
+      firstLine=false;
+      const auto comment=line.find('#');
+      if(comment!=std::string::npos)line.erase(comment);
+      const auto equals=line.find('=');
+      if(equals==std::string::npos)continue;
+      const auto trim=[](const std::string& text) {
+        const auto first=text.find_first_not_of(" \t\r\n");
+        if(first==std::string::npos)return std::string{};
+        return text.substr(first,text.find_last_not_of(" \t\r\n")-first+1);
+      };
+      if(trim(line.substr(0,equals))=="Log")enabled=trim(line.substr(equals+1))=="1";
+    }
+    return !config.bad()&&enabled;
+  }catch(...){return false;}
+}
+
 static void Log(const char* message) noexcept {
+  if(!gLoggingEnabled)return;
   HANDLE file=CreateFileW(gLogPath,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
   if(file==INVALID_HANDLE_VALUE)return;
   DWORD written;WriteFile(file,message,static_cast<DWORD>(std::strlen(message)),&written,nullptr);
@@ -116,8 +143,13 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
   if(!n||n+13>=MAX_PATH)return FALSE;wcscat_s(system,L"\\version.dll");
   const auto version=LoadLibraryW(system);if(!version)return FALSE;
   for(size_t i=0;i<17;i++) {gVersion[i]=GetProcAddress(version,kVersionExports[i]);if(!gVersion[i])return FALSE;}
-  GetModuleFileNameW(instance,gLogPath,MAX_PATH);auto slash=wcsrchr(gLogPath,L'\\');
-  if(!slash)return TRUE;wcscpy_s(slash+1,MAX_PATH-static_cast<size_t>(slash+1-gLogPath),L"dxball2-aex.log");
+  const auto pathLength=GetModuleFileNameW(instance,gLogPath,MAX_PATH);
+  if(!pathLength||pathLength>=MAX_PATH)return TRUE;
+  auto slash=wcsrchr(gLogPath,L'\\');
+  if(!slash)return TRUE;
+  const auto remaining=MAX_PATH-static_cast<size_t>(slash+1-gLogPath);
+  wcscpy_s(slash+1,remaining,L"aex.cfg");gLoggingEnabled=ReadLogSetting(gLogPath);
+  wcscpy_s(slash+1,remaining,L"aex.log");
   wchar_t executable[MAX_PATH];if(!GetModuleFileNameW(nullptr,executable,MAX_PATH))return TRUE;
   if(!VerifiedGame(executable)) {Log("Unsupported executable: native mod disabled; original game left unchanged.");return TRUE;}
   gGame=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
