@@ -6,6 +6,7 @@
 #include "config.hpp"
 #include "skip-longbow.hpp"
 #include "screen-transition.hpp"
+#include "dangerous-lua.hpp"
 #include "version-proxy.hpp"
 #include <intrin.h>
 #include <fstream>
@@ -147,6 +148,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     if(gGame[0x55e44]!=0x74||gGame[0x55e45]!=0x50)throw std::runtime_error("Unexpected plain-BDST branch");
     if(config.skipLongbow)VerifySkipLongbow(gGame);
     if(config.noScreenTransition)VerifyNoScreenTransition(gGame);
+    if(config.disableDangerousLua)VerifyDisableDangerousLua(gGame);
     ApplyGridPatches(gGame);
     ReplaceCall(0x55e56,reinterpret_cast<void*>(&DecodeBoard),0xab8c0);
     ReplaceCall(0x55ef4,reinterpret_cast<void*>(&BoardChecksum),0xab700);
@@ -163,6 +165,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     const uint8_t nops[2]={0x90,0x90};WriteMemory(gGame+0x55e44,nops,2);
     if(config.skipLongbow){InstallSkipLongbow(gGame);Log("Longbow Games startup logo skipped.");}
     if(config.noScreenTransition){InstallNoScreenTransition(gGame);Log("Screen transition animations disabled.");}
+    if(config.disableDangerousLua){InstallDisableDangerousLua(gGame);Log("Dangerous Lua calls and native module loaders disabled; writable io.open modes changed to r.");}
     AddVectoredExceptionHandler(1,Fault);
     Log("DX-Ball 2 AEx experimental native grid and board adapter installed.");
   } catch(const std::exception& error) {Log(error.what());return FALSE;}

@@ -14,6 +14,7 @@ Windows users can ignore these steps.
 - Play boards from Rival Ball - copy them into the `Boards\Rival Ball` folder
 - Skip the Longbow Games splash screen
 - Disable the carpet rolling screen transition
+- Block dangerous code from community content
 
 You can enable and disable options in `aex.cfg`.
 
