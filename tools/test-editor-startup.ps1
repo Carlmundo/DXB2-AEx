@@ -23,7 +23,9 @@ foreach($name in @('DXB2Editor.exe','DXB2Editor2.exe')) {
     $destination=$at+5+[BitConverter]::ToInt32($bytes,1)
     $start=$proxy[0].BaseAddress.ToInt64()
     if($destination -lt $start -or $destination -ge $start+$proxy[0].ModuleMemorySize){throw "$name script hook does not point into the editor DLL"}
-    Write-Output "PASS: $name startup; original Steam DLL forwarded; live script hook points into Tools\steam_api.dll"
+    $branch=New-Object byte[] 2
+    if(-not [EditorScriptMemory]::ReadProcessMemory($editor.Handle,[IntPtr]($editor.MainModule.BaseAddress.ToInt64()+0x2c312),$branch,[UIntPtr]2,[ref]$read) -or $read.ToUInt64() -ne 2 -or $branch[0] -ne 0xeb -or $branch[1] -ne 0x25){throw "$name bundled-board editing patch is missing"}
+    Write-Output "PASS: $name startup; original Steam DLL forwarded; live script hook and bundled-board editing verified"
   } finally {
     if(-not $editor.HasExited){$editor.Kill();$editor.WaitForExit()}
     $editor.Dispose()

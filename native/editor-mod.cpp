@@ -20,7 +20,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
   if(!GetModuleFileNameW(nullptr,path,MAX_PATH)||!editor_scripts::VerifiedExecutable(path))return TRUE;
   try {
     editor_scripts::Install(reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)));
-    OutputDebugStringA("DX-Ball 2 AEx: editor 1 MiB script buffer installed.\n");
+    OutputDebugStringA("DX-Ball 2 AEx: editor 1 MiB script buffer and bundled-board editing installed.\n");
   }catch(const std::exception& error){OutputDebugStringA(error.what());}
   return TRUE;
 }

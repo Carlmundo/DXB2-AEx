@@ -13,6 +13,7 @@
 namespace editor_scripts {
 inline constexpr int kBufferBytes=1024*1024;
 inline constexpr int kMaxTextBytes=kBufferBytes-1;
+inline constexpr uint32_t kEditBundledBoardsRva=0x2c312;
 inline uint8_t* base=nullptr;
 inline DLGPROC originalDialog=nullptr;
 inline thread_local bool updating=false;
@@ -149,9 +150,15 @@ inline void Verify(uint8_t* image) {
   constexpr uint8_t getScript[]={0x55,0x8b,0xec,0x8b,0xc1,0x83,0xec,0x0c};
   constexpr uint8_t assign[]={0x55,0x8b,0xec,0x53,0x8b,0x5d,0x08,0x56,0x8b,0xf1};
   constexpr uint8_t format[]={0x55,0x8b,0xec,0x83,0xec,0x30};
+  // The patched edtior may be used and differs only in this branch: JE +0x25 becomes JMP +0x25.
+  // Accept its already-patched form as well as the original editor.
+  constexpr uint8_t lockBranchTail[]={0x25,0x57,0x8b,0xcb,0xe8,0x64,0xe7,0xff,0xff,0x84,0xc0,0x75,0x19};
+  const auto lockBranch=image[kEditBundledBoardsRva];
   if(std::memcmp(image+0x32f20,entry,sizeof(entry))||std::memcmp(image+0x3346f,oldRead,sizeof(oldRead))||
      std::memcmp(image+0x32480,getScript,sizeof(getScript))||std::memcmp(image+0xe7b0,assign,sizeof(assign))||
-     std::memcmp(image+0x33b40,format,sizeof(format)))throw std::runtime_error("Unsupported editor script instructions");
+     std::memcmp(image+0x33b40,format,sizeof(format))||(lockBranch!=0x74&&lockBranch!=0xeb)||
+     std::memcmp(image+kEditBundledBoardsRva+1,lockBranchTail,sizeof(lockBranchTail)))
+    throw std::runtime_error("Unsupported editor instructions");
 }
 inline void Install(uint8_t* image) {
   Verify(image);
@@ -165,7 +172,15 @@ inline void Install(uint8_t* image) {
   if(!VirtualProtect(trampoline,10,PAGE_EXECUTE_READ,&old)){VirtualFree(trampoline,0,MEM_RELEASE);throw std::runtime_error("Cannot protect editor script trampoline");}
   FlushInstructionCache(GetCurrentProcess(),trampoline,10);
   base=image;originalDialog=reinterpret_cast<DLGPROC>(trampoline);
-  try {Jump(image+0x32f20,reinterpret_cast<const void*>(&Dialog));}
-  catch(...) {base=nullptr;originalDialog=nullptr;VirtualFree(trampoline,0,MEM_RELEASE);throw;}
+  const auto originalBranch=image[kEditBundledBoardsRva];
+  try {
+    if(originalBranch==0x74) {
+      const uint8_t jump=0xeb;Write(image+kEditBundledBoardsRva,&jump,1);
+    }
+    Jump(image+0x32f20,reinterpret_cast<const void*>(&Dialog));
+  }catch(...) {
+    if(originalBranch==0x74)try{Write(image+kEditBundledBoardsRva,&originalBranch,1);}catch(...){}
+    base=nullptr;originalDialog=nullptr;VirtualFree(trampoline,0,MEM_RELEASE);throw;
+  }
 }
 }

@@ -5,6 +5,7 @@
 #include <string>
 #include <filesystem>
 #include <array>
+#include <fstream>
 
 static uint8_t* gImage=nullptr;
 static void Require(bool ok,const char* message){if(!ok)throw std::runtime_error(message);}
@@ -66,15 +67,51 @@ static std::string Sample(size_t length,int kind) {
   if(length>16)result.replace(length-16,16,"-- END SENTINEL!");
   return result;
 }
-static bool LoadBoard(const std::wstring& path) {
+static bool LoadBoard(const std::wstring& path,bool editing=false) {
   // FILE objects must come from the editor's CRT, not this harness's /MT CRT.
   const auto open=*reinterpret_cast<void* (__cdecl**)(const wchar_t*,const wchar_t*)>(gImage+0x45328);
   const auto close=*reinterpret_cast<int (__cdecl**)(void*)>(gImage+0x4532c);
   struct File {void* handle;uint8_t reserved[24]={};std::wstring name;};
   File file{open(path.c_str(),L"rb"),{},path};Require(file.handle!=nullptr,"Cannot open board fixture");
-  using Load=int (__thiscall*)(void*,void*,bool,const std::wstring*);
-  const int result=reinterpret_cast<Load>(gImage+0x2c000)(gImage+0x555f0,&file,false,&path);
+  using Load=int (__thiscall*)(void*,void*,bool,const std::string*);
+  const std::string password;
+  int result=0;
+  try {result=reinterpret_cast<Load>(gImage+0x2c000)(gImage+0x555f0,&file,editing,&password);}
+  catch(...) {close(file.handle);throw;}
   close(file.handle);return result!=0;
+}
+static std::vector<char> FileBytes(const std::filesystem::path& path) {
+  std::ifstream input(path,std::ios::binary);Require(static_cast<bool>(input),"Cannot read bundled board fixture");
+  return std::vector<char>(std::istreambuf_iterator<char>(input),{});
+}
+static void BundledBoardTests(const std::filesystem::path& fixture,const std::filesystem::path& outputDirectory) {
+  const auto before=FileBytes(fixture);
+  const auto path=std::filesystem::absolute(fixture).wstring();
+  Require(gImage[editor_scripts::kEditBundledBoardsRva]==0xeb,"Bundled-board edit branch is not installed");
+  // Reproduce the stock editor's failure in this isolated mapping, then apply
+  // precisely the Editor2 byte again. No source boardsets or EXEs are modified.
+  const uint8_t lockedBranch=0x74,editBranch=0xeb;
+  editor_scripts::Write(gImage+editor_scripts::kEditBundledBoardsRva,&lockedBranch,1);
+  bool locked=false;
+  try {LoadBoard(path,true);}
+  catch(const std::exception& error) {
+    if(std::strstr(error.what(),"Boardset file is locked.")==nullptr)throw;
+    locked=true;
+  }
+  Require(locked,"Bundled fixture did not exercise the original locked-board rejection");
+  editor_scripts::Write(gImage+editor_scripts::kEditBundledBoardsRva,&editBranch,1);
+  Require(LoadBoard(path,true),"Bundled boardset still cannot be opened for editing");
+  constexpr char edit[]="-- AEx bundled-board edit regression";
+  reinterpret_cast<void* (__thiscall*)(void*,const char*,size_t)>(gImage+0xe7b0)(editor_scripts::Script(2),edit,sizeof(edit)-1);
+  std::filesystem::create_directories(outputDirectory);
+  const auto output=(std::filesystem::absolute(outputDirectory)/L"bundled-edit-roundtrip.bdz").wstring();
+  Require(!std::filesystem::exists(output),"Bundled board output fixture already exists");
+  using Save=int (__thiscall*)(void*,const std::wstring*,bool);
+  Require(reinterpret_cast<Save>(gImage+0x2d0d0)(gImage+0x555f0,&output,false)!=0,"Bundled board edit could not be saved");
+  Require(LoadBoard(output,true),"Edited bundled boardset could not be reopened");
+  Same(2,edit);
+  Require(FileBytes(fixture)==before,"Original bundled boardset was modified");
+  std::puts("PASS: stock editor rejects locked boardset; DLL opens, edits, saves and reopens it; source unchanged");std::fflush(stdout);
 }
 static POINT CharacterPosition(HWND control,LONG character) {
   POINT point{};SendMessageA(control,EM_POSFROMCHAR,reinterpret_cast<WPARAM>(&point),character);return point;
@@ -123,7 +160,7 @@ static void ViewportTests(HWND parent,HWND edit) {
   Require(*reinterpret_cast<const uint32_t*>(gImage+0x3373a)==1000,"Original line-number limit was changed");
 }
 int wmain(int argc,wchar_t** argv) {
-  if(argc!=4){std::fprintf(stderr,"Usage: editor-script-tests.exe editor.exe fixture.bdz output-directory\n");return 2;}
+  if(argc!=4&&argc!=5){std::fprintf(stderr,"Usage: editor-script-tests.exe editor.exe fixture.bdz output-directory [bundled-boardset.bdz]\n");return 2;}
   SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,Fault);
   try {
     Require(editor_scripts::VerifiedExecutable(argv[1]),"Unverified editor executable");
@@ -136,7 +173,13 @@ int wmain(int argc,wchar_t** argv) {
     bool rejected=false;try{editor_scripts::Install(gImage);}catch(const std::runtime_error&){rejected=true;}
     Require(rejected&&gImage[0x32f20]==0x55,"Mismatched editor was partially patched");
     editor_scripts::Write(gImage+0x33470,&saved,1);
+    const uint8_t originalBranch=gImage[editor_scripts::kEditBundledBoardsRva],badBranch=0x90;
+    editor_scripts::Write(gImage+editor_scripts::kEditBundledBoardsRva,&badBranch,1);rejected=false;
+    try{editor_scripts::Install(gImage);}catch(const std::runtime_error&){rejected=true;}
+    Require(rejected&&gImage[0x32f20]==0x55&&gImage[editor_scripts::kEditBundledBoardsRva]==badBranch,"Mismatched edit branch allowed partial installation");
+    editor_scripts::Write(gImage+editor_scripts::kEditBundledBoardsRva,&originalBranch,1);
     editor_scripts::Install(gImage);
+    Require(gImage[editor_scripts::kEditBundledBoardsRva]==0xeb,"Editor2-equivalent branch was not installed");
     editor_scripts::Jump(gImage+0x39500,reinterpret_cast<void*>(&RefreshTitle));
     // Initialize the original C++ globals (including locale and keyword tables),
     // without running WinMain or registering destructors in an unstarted EXE CRT.
@@ -148,6 +191,7 @@ int wmain(int argc,wchar_t** argv) {
     // its lazy locale directly rather than borrowing this harness's TLS slot.
     reinterpret_cast<void (__cdecl*)(void*)>(gImage+0x3be90)(gImage+0x5d010);
     std::puts("PASS: verified editor; mismatched instructions rejected before mutation");std::fflush(stdout);
+    if(argc==5)BundledBoardTests(argv[4],argv[3]);
     const std::wstring fixture=std::filesystem::absolute(argv[2]).wstring();
     Require(LoadBoard(fixture),"Original editor could not load fixture");
     std::puts("PASS: original editor loaded workspace boardset fixture");std::fflush(stdout);
