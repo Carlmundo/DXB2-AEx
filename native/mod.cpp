@@ -8,6 +8,7 @@
 #include "screen-transition.hpp"
 #include "dangerous-lua.hpp"
 #include "version-proxy.hpp"
+#include "nostat.hpp"
 #include <intrin.h>
 #include <fstream>
 
@@ -146,9 +147,11 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     if(gGame[0x90060]!=5||gGame[0x91655]!=5||*reinterpret_cast<uint32_t*>(gGame+0x90598)!=26||*reinterpret_cast<uint32_t*>(gGame+0x90540)!=0x820)
       throw std::runtime_error("Unexpected save format operands");
     if(gGame[0x55e44]!=0x74||gGame[0x55e45]!=0x50)throw std::runtime_error("Unexpected plain-BDST branch");
+    if(config.disableAchievementReset)VerifyNostatSoundOnly(gGame);
     if(config.skipLongbow)VerifySkipLongbow(gGame);
     if(config.noScreenTransition)VerifyNoScreenTransition(gGame);
     if(config.disableDangerousLua)VerifyDisableDangerousLua(gGame);
+    if(config.disableAchievementReset)InstallNostatSoundOnly(gGame);
     ApplyGridPatches(gGame);
     ReplaceCall(0x55e56,reinterpret_cast<void*>(&DecodeBoard),0xab8c0);
     ReplaceCall(0x55ef4,reinterpret_cast<void*>(&BoardChecksum),0xab700);

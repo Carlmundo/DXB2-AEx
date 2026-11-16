@@ -27,6 +27,8 @@ cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\dangero
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\version-proxy-tests.exe native\version-proxy-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\nostat-tests.exe native\nostat-tests.cpp /link /DYNAMICBASE /NXCOMPAT
+if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /LD /I .scratch /Fo:build\ /Fe:build\version.dll native\mod.cpp /link /DEF:native\version.def /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
 call native\build-editor.cmd

@@ -6,7 +6,8 @@ struct AexConfig {
   bool log=false;
   bool skipLongbow=false;
   bool noScreenTransition=false;
-  bool disableDangerousLua=false;
+  bool disableDangerousLua=true;
+  bool disableAchievementReset=true;
 };
 
 inline AexConfig ReadAexConfig(std::istream& config) noexcept {
@@ -27,11 +28,13 @@ inline AexConfig ReadAexConfig(std::istream& config) noexcept {
         return text.substr(first,text.find_last_not_of(" \t\r\n")-first+1);
       };
       const auto key=trim(line.substr(0,equals));
-      const auto enabled=trim(line.substr(equals+1))=="1";
+      const auto value=trim(line.substr(equals+1));
+      const auto enabled=value=="1";
       if(key=="Log")settings.log=enabled;
       else if(key=="SkipLongbow")settings.skipLongbow=enabled;
       else if(key=="NoScreenTransition")settings.noScreenTransition=enabled;
-      else if(key=="DisableDangerousLua")settings.disableDangerousLua=enabled;
+      else if(key=="DisableDangerousLua")settings.disableDangerousLua=value!="0";
+      else if(key=="DisableAchievementReset")settings.disableAchievementReset=value!="0";
     }
     return config.bad()?AexConfig{}:settings;
   }catch(...){return {};}
