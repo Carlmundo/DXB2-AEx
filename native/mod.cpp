@@ -6,6 +6,7 @@
 #include "config.hpp"
 #include "skip-longbow.hpp"
 #include "screen-transition.hpp"
+#include "version-proxy.hpp"
 #include <intrin.h>
 #include <fstream>
 
@@ -13,8 +14,7 @@ static uint8_t* gGame=nullptr;
 static Geometry gGeometry;
 static wchar_t gLogPath[MAX_PATH]={};
 static bool gLoggingEnabled=false;
-static FARPROC gVersion[17]={};
-static const char* kVersionExports[]={"GetFileVersionInfoA","GetFileVersionInfoByHandle","GetFileVersionInfoExA","GetFileVersionInfoExW","GetFileVersionInfoSizeA","GetFileVersionInfoSizeExA","GetFileVersionInfoSizeExW","GetFileVersionInfoSizeW","GetFileVersionInfoW","VerFindFileA","VerFindFileW","VerInstallFileA","VerInstallFileW","VerLanguageNameA","VerLanguageNameW","VerQueryValueA","VerQueryValueW"};
+static FARPROC gVersion[kVersionExportCount]={};
 static thread_local const void* gNormalized=nullptr;
 static thread_local int gNormalizedLength=0;
 static thread_local uint32_t gOriginalChecksum=0;
@@ -128,7 +128,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
   wchar_t system[MAX_PATH];const auto n=GetSystemDirectoryW(system,MAX_PATH);
   if(!n||n+13>=MAX_PATH)return FALSE;wcscat_s(system,L"\\version.dll");
   const auto version=LoadLibraryW(system);if(!version)return FALSE;
-  for(size_t i=0;i<17;i++) {gVersion[i]=GetProcAddress(version,kVersionExports[i]);if(!gVersion[i])return FALSE;}
+  if(!ResolveVersionExports(version,gVersion,&GetProcAddress))return FALSE;
   const auto pathLength=GetModuleFileNameW(instance,gLogPath,MAX_PATH);
   if(!pathLength||pathLength>=MAX_PATH)return TRUE;
   auto slash=wcsrchr(gLogPath,L'\\');
