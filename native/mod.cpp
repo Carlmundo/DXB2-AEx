@@ -9,6 +9,9 @@
 #include "dangerous-lua.hpp"
 #include "version-proxy.hpp"
 #include "nostat.hpp"
+#include "lives-counter.hpp"
+#include "music-volume.hpp"
+#include "loaded-paddle.hpp"
 #include <intrin.h>
 #include <fstream>
 
@@ -151,6 +154,13 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     if(config.skipLongbow)VerifySkipLongbow(gGame);
     if(config.noScreenTransition)VerifyNoScreenTransition(gGame);
     if(config.disableDangerousLua)VerifyDisableDangerousLua(gGame);
+    VerifyLivesCounter(gGame);
+    loaded_paddle::Verify(gGame);
+    auto* audio=reinterpret_cast<uint8_t*>(GetModuleHandleW(L"Audiow32.dll"));
+    wchar_t audioPath[MAX_PATH]={};
+    const auto audioPathLength=audio?GetModuleFileNameW(reinterpret_cast<HMODULE>(audio),audioPath,MAX_PATH):0;
+    const bool fixMusic=audioPathLength&&audioPathLength<MAX_PATH&&music_volume::VerifiedAudio(audioPath);
+    if(fixMusic)music_volume::Verify(gGame,audio);
     if(config.disableAchievementReset)InstallNostatSoundOnly(gGame);
     ApplyGridPatches(gGame);
     ReplaceCall(0x55e56,reinterpret_cast<void*>(&DecodeBoard),0xab8c0);
@@ -164,6 +174,10 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     JumpTo(gGame,0x55a70,reinterpret_cast<void*>(&BoardMargin));
     JumpTo(gGame,0x53720,reinterpret_cast<void*>(&BoardBorder));
     gGeometry.Install();
+    InstallLivesCounter(gGame);
+    loaded_paddle::Install(gGame);
+    if(fixMusic){music_volume::Install(gGame,audio);Log("Music volume precision fix installed.");}
+    else Log("Unsupported audio library: music volume fix disabled.");
     // Route raw and encoded board files through the same validated adapter.
     const uint8_t nops[2]={0x90,0x90};WriteMemory(gGame+0x55e44,nops,2);
     if(config.skipLongbow){InstallSkipLongbow(gGame);Log("Longbow Games startup logo skipped.");}
