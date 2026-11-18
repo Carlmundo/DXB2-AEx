@@ -14,6 +14,7 @@
 #include "loaded-paddle.hpp"
 #include "invisible-bricks.hpp"
 #include "laser-paddle.hpp"
+#include "launch-angle.hpp"
 #include <intrin.h>
 #include <fstream>
 
@@ -160,6 +161,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     loaded_paddle::Verify(gGame);
     invisible_bricks::Verify(gGame);
     laser_paddle::Verify(gGame,config.holdClickFire);
+    if(config.launchAngle)launch_angle::Verify(gGame);
     auto* audio=reinterpret_cast<uint8_t*>(GetModuleHandleW(L"Audiow32.dll"));
     wchar_t audioPath[MAX_PATH]={};
     const auto audioPathLength=audio?GetModuleFileNameW(reinterpret_cast<HMODULE>(audio),audioPath,MAX_PATH):0;
@@ -182,6 +184,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     loaded_paddle::Install(gGame);
     invisible_bricks::Install(gGame);
     laser_paddle::Install(gGame,config.holdClickFire);
+    if(config.launchAngle){launch_angle::Install(gGame);Log("LaunchAngle enabled: fresh balls start 6 pixels right of the paddle centre.");}
     if(config.holdClickFire)Log("HoldClickFire enabled: hold left-click to repeat laser fire.");
     if(fixMusic){music_volume::Install(gGame,audio);Log("Music volume precision fix installed.");}
     else Log("Unsupported audio library: music volume fix disabled.");

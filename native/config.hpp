@@ -7,6 +7,7 @@ struct AexConfig {
   bool skipLongbow=false;
   bool noScreenTransition=false;
   bool holdClickFire=false;
+  bool launchAngle=false;
   bool disableDangerousLua=true;
   bool disableAchievementReset=true;
 };
@@ -35,6 +36,7 @@ inline AexConfig ReadAexConfig(std::istream& config) noexcept {
       else if(key=="SkipLongbow")settings.skipLongbow=enabled;
       else if(key=="NoScreenTransition")settings.noScreenTransition=enabled;
       else if(key=="HoldClickFire")settings.holdClickFire=enabled;
+      else if(key=="LaunchAngle")settings.launchAngle=enabled;
       else if(key=="DisableDangerousLua")settings.disableDangerousLua=value!="0";
       else if(key=="DisableAchievementReset")settings.disableAchievementReset=value!="0";
     }
