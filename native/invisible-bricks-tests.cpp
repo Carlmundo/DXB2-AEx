@@ -1,4 +1,4 @@
-// Run native invisible-brick damage and Falling Bricks updates in a mapped executable.
+// Run native invisible-brick damage, falling and zap updates in a mapped executable.
 // Presentation, Lua and score callbacks are replaced; no live saves are used.
 #include "invisible-bricks.hpp"
 #include "verified-game.hpp"
@@ -201,6 +201,101 @@ static void RunPatched() {
 }
 }
 
+namespace zap_tests {
+struct Expected {std::vector<uint8_t> cells;bool changed;int draws;};
+static std::vector<Expected> gExpected;
+static int gDraws=0;
+static bool gCheckReveal=false;
+static int gWidth=26,gStride=0x2094,gMask=0;
+static int __fastcall ZappedVariant(void*,void*,int,int) {return 1;}
+static void __cdecl Dirty(int,int) {
+  ++gDraws;
+  if(gCheckReveal)for(int layer=0;layer<3;layer++)if(gMask&(1<<layer))
+    for(int x=0;x<gWidth;x++)for(int y=0;y<20;y++)
+      Require(!(Cell(x,y,layer,gStride)[2]&2),"Zap redraw observed an invisible brick");
+}
+static void PrepareZap(int width,int stride,int mask,int mode) {
+  Prepare(width,stride);gWidth=width;gStride=stride;gMask=mask;
+  gDefinitions.fill(0);
+  gDefinitions[2*9]=2;gDefinitions[3*9]=3;
+  gDefinitions[4*9]=gDefinitions[5*9]=4;
+  gDefinitions[7*9]=7;gDefinitions[8*9]=9;
+  for(int layer=0;layer<3;layer++) {
+    gLayers[layer*stride+stride-16]=(mask>>layer)&1;
+    for(int x=0;x<width;x++)for(int y=0;y<20;y++) {
+      auto* cell=Cell(x,y,layer,stride);
+      const auto value=static_cast<uint32_t>(layer*740+x*20+y);
+      cell[0]=0x12340000u+value;cell[3]=0x43210000u+value;
+      cell[1]=mode==2?value%10:mode==3?0:1;
+      cell[2]=0xa5a50001u|((mode!=1&&(mode==3||value%2))?2u:0u);
+    }
+  }
+  At<int>(0x1a7124)=123;At<int>(0x1a712c)=7;At<int>(0x1a70b8)=1;
+  gScores=gPoints=gReveals=0;
+}
+static bool HiddenCells() {
+  for(int layer=0;layer<3;layer++)if(gMask&(1<<layer))
+    for(int x=0;x<gWidth;x++)for(int y=0;y<20;y++)
+      if(Cell(x,y,layer,gStride)[2]&2)return true;
+  return false;
+}
+static bool Zap() {
+  gDraws=0;
+  reinterpret_cast<void (__cdecl*)()>(gBase+0x8c1e0)();
+  Require(At<int>(0x1a7124)==123&&At<int>(0x1a712c)==7,"Zap changed brick counters");
+  Require(gScores==0&&gPoints==0&&gReveals==0,"Zap awarded hit or destruction points");
+  Require(gDraws==0||gDraws==gWidth*20,"Zap did not retain its native board redraw behavior");
+  return gDraws!=0;
+}
+static void ReproduceOriginal() {
+  JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&Dirty));
+  PrepareZap(26,0x2094,7,0);
+  Require(!Zap()&&HiddenCells(),"Original Zap Bricks invisibility bug not reproduced");
+  std::puts("PASS: original Zap Bricks leaves hidden normal bricks invisible without requesting a redraw");
+}
+static void CaptureReferences() {
+  JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&Dirty));
+  JumpTo(gBase,0x56b20,reinterpret_cast<void*>(&ZappedVariant));
+  // Capture the original native weakening behavior before installing the fix.
+  for(int width:{20,26,37})for(int mask:{0,1,2,5,7})for(int mode=0;mode<4;mode++) {
+    PrepareZap(width,0x2e54,mask,mode);
+    const bool hidden=HiddenCells();
+    for(int step=0;step<2;step++) {
+      const bool changed=Zap()||(step==0&&hidden);
+      auto cells=gLayers;
+      for(int layer=0;layer<3;layer++)if(mask&(1<<layer))
+        for(int x=0;x<width;x++)for(int y=0;y<20;y++)
+          *reinterpret_cast<uint32_t*>(cells.data()+layer*0x2e54+4+(x*20+y)*16+8)&=~2u;
+      gExpected.push_back({std::move(cells),changed,changed?width*20:0});
+    }
+  }
+  JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&::Dirty));
+  JumpTo(gBase,0x56b20,reinterpret_cast<void*>(&Variant));
+}
+static void RunPatched() {
+  JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&Dirty));
+  JumpTo(gBase,0x56b20,reinterpret_cast<void*>(&ZappedVariant));
+  gCheckReveal=true;size_t index=0;
+  for(int width:{20,26,37})for(int mask:{0,1,2,5,7})for(int mode=0;mode<4;mode++) {
+    PrepareZap(width,0x2e54,mask,mode);
+    for(int step=0;step<2;step++) {
+      const auto& expected=gExpected[index++];
+      const bool changed=Zap();
+      if(changed!=expected.changed||gDraws!=expected.draws)
+        std::fprintf(stderr,"Zap mismatch: width %d, mask %d, mode %d, step %d; changed %d/%d, draws %d/%d\n",width,mask,mode,step,changed,expected.changed,gDraws,expected.draws);
+      Require(changed==expected.changed&&gDraws==expected.draws,"Zap reveal did not request the expected redraw");
+      Require(gLayers==expected.cells,"Zap changed native weakening, unrelated flags, opaque cell data or inactive layers");
+    }
+  }
+  gCheckReveal=false;
+  std::printf("PASS: %zu native zap cases across all board widths, mixed brick types, visible/inactive layers and repeated pickups; invisibility revealed and native weakening preserved\n",index);
+  PrepareZap(26,0x2e54,7,0);Zap();
+  Hit(5,6,1,1,false);
+  Require(Cell(5,6,1,0x2e54)[1]==0&&gReveals==0&&gScores==1,"Zapped brick still required a reveal hit before destruction");
+  std::puts("PASS: a normal ball destroys a previously hidden, zapped brick in one hit");
+}
+}
+
 int wmain(int argc,wchar_t** argv) {
   if(argc!=2){std::fprintf(stderr,"Usage: invisible-bricks-tests.exe path-to-DXBall2.exe\n");return 2;}
   SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,Fault);
@@ -217,6 +312,11 @@ int wmain(int argc,wchar_t** argv) {
     Require(rejected,"Unexpected move call was accepted");
     Require(gBase[0x85f40]==original,"Failed move verification partially installed the damage fix");
     WriteMemory(gBase+0x5c725,&moveOriginal,1);
+    const uint8_t zapOriginal=gBase[0x8c27b];WriteMemory(gBase+0x8c27b,&wrong,1);
+    rejected=false;try{invisible_bricks::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
+    Require(rejected,"Unexpected zap instruction was accepted");
+    Require(gBase[0x85f40]==original&&gBase[0x5c725]==moveOriginal,"Failed zap verification partially installed a fix");
+    WriteMemory(gBase+0x8c27b,&zapOriginal,1);
     JumpTo(gBase,0x55a70,reinterpret_cast<void*>(&Margin));
     JumpTo(gBase,0x810d0,reinterpret_cast<void*>(&NoScript));
     JumpTo(gBase,0x538a0,reinterpret_cast<void*>(&SplashEligible));
@@ -241,10 +341,12 @@ int wmain(int argc,wchar_t** argv) {
       const bool area=object==6||object==7||((object==1||object==3||object==14)&&fire);
       expected.push_back(Run(26,0x2094,0,5,6,brick,object,fire,hidden&&!area));
     }
+    zap_tests::ReproduceOriginal();
     falling_tests::ReproduceOriginal();
     JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&Dirty));
-    invisible_bricks::Install(gBase);
     ApplyGridPatches(gBase);
+    zap_tests::CaptureReferences();
+    invisible_bricks::Install(gBase);
     Geometry geometry;geometry.base=gBase;geometry.Install();
     int cases=0;
     for(int width:{20,26,37}) {
@@ -268,6 +370,7 @@ int wmain(int argc,wchar_t** argv) {
     std::printf("PASS: %d native damage cases; hidden/revealed, balls/lasers/explosions/fireballs, special bricks, three layers and all board widths\n",cases);
     std::puts("PASS: native fireball splash destroys all nine hidden bricks and updates the board counters once per brick");
     falling_tests::RunPatched();
+    zap_tests::RunPatched();
     return 0;
   }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }
