@@ -10,10 +10,10 @@ static void Require(bool condition,const char* message) {
   if(!condition)throw std::runtime_error(message);
 }
 
-static void CheckConfig(const std::string& text,bool log,bool skip,bool noTransition=false,bool disableDangerousLua=true,bool disableAchievementReset=true) {
+static void CheckConfig(const std::string& text,bool log,bool skip,bool noTransition=false,bool disableDangerousLua=true,bool disableAchievementReset=true,bool holdClickFire=false) {
   std::istringstream input(text);
   const auto config=ReadAexConfig(input);
-  Require(config.log==log&&config.skipLongbow==skip&&config.noScreenTransition==noTransition&&config.disableDangerousLua==disableDangerousLua&&config.disableAchievementReset==disableAchievementReset,"Incorrect config settings");
+  Require(config.log==log&&config.skipLongbow==skip&&config.noScreenTransition==noTransition&&config.disableDangerousLua==disableDangerousLua&&config.disableAchievementReset==disableAchievementReset&&config.holdClickFire==holdClickFire,"Incorrect config settings");
 }
 
 static DWORD gTickCalls=0;
@@ -24,6 +24,17 @@ int wmain(int argc,wchar_t** argv) {
   if(argc!=2){std::fprintf(stderr,"Usage: startup-tests.exe path-to-DXBall2.exe\n");return 2;}
   try {
     CheckConfig("",false,false);
+    for(const char* value:{"0","2","true","01","1junk","","1 = 1"})
+      CheckConfig(std::string("HoldClickFire = ")+value,false,false);
+    CheckConfig("HoldClickFire = 1",false,false,false,true,true,true);
+    CheckConfig("\xef\xbb\xbf# options\r\n HoldClickFire\t= 1 # repeat lasers\r\n",false,false,false,true,true,true);
+    CheckConfig("# HoldClickFire=1\nOtherHoldClickFire=1\nholdclickfire=1",false,false);
+    CheckConfig("HoldClickFire=1\nHoldClickFire=0",false,false);
+    CheckConfig("HoldClickFire=0\nHoldClickFire=1",false,false,false,true,true,true);
+    CheckConfig("HoldClickFire=1\nHoldClickFire=invalid",false,false);
+    CheckConfig("HoldClickFire=1\nLog=1\nSkipLongbow=1\nNoScreenTransition=1\nDisableDangerousLua=0\nDisableAchievementReset=0",true,true,true,false,false,true);
+    std::istringstream failedHold("HoldClickFire=1");failedHold.setstate(std::ios::badbit);
+    Require(!ReadAexConfig(failedHold).holdClickFire,"Unreadable config must disable HoldClickFire");
     for(const char* key:{"Log","SkipLongbow","NoScreenTransition"}) {
       for(const char* value:{"0","2","true","01","1junk","","1 = 1"})
         CheckConfig(std::string(key)+" = "+value,false,false);

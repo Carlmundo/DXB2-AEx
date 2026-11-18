@@ -12,6 +12,8 @@
 #include "lives-counter.hpp"
 #include "music-volume.hpp"
 #include "loaded-paddle.hpp"
+#include "invisible-bricks.hpp"
+#include "laser-paddle.hpp"
 #include <intrin.h>
 #include <fstream>
 
@@ -156,6 +158,8 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     if(config.disableDangerousLua)VerifyDisableDangerousLua(gGame);
     VerifyLivesCounter(gGame);
     loaded_paddle::Verify(gGame);
+    invisible_bricks::Verify(gGame);
+    laser_paddle::Verify(gGame,config.holdClickFire);
     auto* audio=reinterpret_cast<uint8_t*>(GetModuleHandleW(L"Audiow32.dll"));
     wchar_t audioPath[MAX_PATH]={};
     const auto audioPathLength=audio?GetModuleFileNameW(reinterpret_cast<HMODULE>(audio),audioPath,MAX_PATH):0;
@@ -176,6 +180,9 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     gGeometry.Install();
     InstallLivesCounter(gGame);
     loaded_paddle::Install(gGame);
+    invisible_bricks::Install(gGame);
+    laser_paddle::Install(gGame,config.holdClickFire);
+    if(config.holdClickFire)Log("HoldClickFire enabled: hold left-click to repeat laser fire.");
     if(fixMusic){music_volume::Install(gGame,audio);Log("Music volume precision fix installed.");}
     else Log("Unsupported audio library: music volume fix disabled.");
     // Route raw and encoded board files through the same validated adapter.
