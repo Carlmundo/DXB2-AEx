@@ -1,0 +1,156 @@
+// Execute the native eligibility branches, name builder and Steam state machine.
+// Steam is replaced with a fake interface; no real scores or saves are touched.
+#include "community-leaderboards.hpp"
+#include "verified-game.hpp"
+#include <array>
+#include <cstdlib>
+#include <new>
+#include <string>
+
+static uint8_t* gBase=nullptr;
+static void* gEntry=nullptr;
+static void* gRows=nullptr;
+static int gCustom=0;
+template<class T> static T& At(void* object,size_t offset) {return *reinterpret_cast<T*>(static_cast<uint8_t*>(object)+offset);}
+template<class T> static T& Global(size_t offset) {return At<T>(gBase,offset);}
+static void Require(bool ok,const char* message) {if(!ok)throw std::runtime_error(message);}
+static LONG CALLBACK Fault(EXCEPTION_POINTERS* fault) {
+  if(fault->ExceptionRecord->ExceptionCode!=EXCEPTION_ACCESS_VIOLATION)return EXCEPTION_CONTINUE_SEARCH;
+  std::fprintf(stderr,"Leaderboard test fault at RVA %08X\n",static_cast<uint32_t>(reinterpret_cast<uintptr_t>(fault->ExceptionRecord->ExceptionAddress)-reinterpret_cast<uintptr_t>(gBase)));
+  TerminateProcess(GetCurrentProcess(),3);return EXCEPTION_CONTINUE_SEARCH;
+}
+static __declspec(naked) int Gate() {
+  __asm {
+    push esi
+    xor eax,eax
+    mov esi,gRows
+    call dword ptr [gEntry]
+    pop esi
+    ret
+  }
+}
+static int __cdecl Allowed() {return 1;}
+static int __cdecl Blocked() {return 0;}
+static int __fastcall CustomMode(void*,void*,const void*) {return gCustom;}
+static int Run(uint32_t rva) {gEntry=gBase+rva;return Gate();}
+
+static constexpr uint64_t kFindCall=0xfedcba9876543210ull,kBoard=0x12345678abcdef01ull;
+static constexpr uint64_t kUploadCall=0xabcdef0123456789ull,kDownloadCall=0x92345678fedcba01ull;
+static std::array<void*,40> gVtable{};
+static void** gStats=gVtable.data();
+static std::array<void*,6> gContext{};
+static void* gCallback=nullptr;
+static uint64_t gCallbackCall=0,gUsedBoard=0;
+static int gFinds=0,gCreates=0,gUploads=0,gDownloads=0;
+static std::string gName;
+static uint64_t __fastcall Find(void*,void*,const char* name) {++gFinds;gName=name;return kFindCall;}
+static uint64_t __fastcall Create(void*,void*,const char*,int,int) {++gCreates;return 0;}
+static uint64_t __fastcall Upload(void*,void*,uint64_t board,int method,int score,const int32_t* details,int count) {
+  ++gUploads;gUsedBoard=board;Require(method==1&&score==123456&&!details&&!count,"Native score upload changed");return kUploadCall;
+}
+static uint64_t __fastcall Download(void*,void*,uint64_t board,int type,int first,int last) {
+  ++gDownloads;gUsedBoard=board;Require(type==0&&first==1&&last==15,"Native download range changed");return kDownloadCall;
+}
+static void* __cdecl Context(void*) {return gContext.data();}
+static void __cdecl Register(void* callback,uint64_t call) {gCallback=callback;gCallbackCall=call;}
+static void __cdecl Unregister(void*,uint64_t) {}
+struct Leaderboard {
+  alignas(8) std::array<uint8_t,0xf0> bytes{};
+  explicit Leaderboard(const std::string& name) {
+    reinterpret_cast<void* (__thiscall*)(void*,void*,const std::string*)>(gBase+0x3e950)(bytes.data(),nullptr,&name);
+  }
+  ~Leaderboard() {reinterpret_cast<void (__thiscall*)(void*)>(gBase+0x3fca0)(bytes.data());}
+  void Tick() {reinterpret_cast<void (__thiscall*)(void*,void*,float)>(gBase+0x41ef0)(nullptr,bytes.data(),0.016f);}
+  void Found(bool found,bool ioFailure=false) {
+    alignas(8) std::array<uint8_t,16> result{};
+    At<uint64_t>(result.data(),0)=found?kBoard:0;result[8]=static_cast<uint8_t>(found);
+    reinterpret_cast<void (__thiscall*)(void*,void*,bool)>(gBase+0x42280)(bytes.data(),result.data(),ioFailure);
+  }
+  void Queue(bool upload) {
+    if(upload) {
+      auto* request=static_cast<uint8_t*>(std::calloc(1,0x2c));Require(request!=nullptr,"Allocation failed");
+      At<int>(request,0x18)=123456;At<void*>(bytes.data(),0x58)=request;
+    }else {
+      auto* range=static_cast<int*>(std::calloc(3,sizeof(int)));Require(range!=nullptr,"Allocation failed");
+      range[1]=1;range[2]=15;At<void*>(bytes.data(),0x60)=range;
+    }
+  }
+};
+int wmain(int argc,wchar_t** argv) {
+  if(argc!=2){std::fprintf(stderr,"Usage: community-leaderboards-tests.exe game.exe\n");return 2;}
+  SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,Fault);
+  try {
+    Require(VerifiedGame(argv[1]),"Unsupported executable hash");
+    gBase=reinterpret_cast<uint8_t*>(LoadLibraryExW(argv[1],nullptr,DONT_RESOLVE_DLL_REFERENCES));Require(gBase!=nullptr,"Cannot map game");
+    community_leaderboards::Verify(gBase);
+    // Verify every patch before writing any part of the feature.
+    for(const auto site:{community_leaderboards::kViewGate,community_leaderboards::kPostGate,community_leaderboards::kTooltip}) {
+      const uint8_t original=gBase[site],wrong=0xcc;WriteMemory(gBase+site,&wrong,1);
+      bool rejected=false;try{community_leaderboards::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
+      Require(rejected,"Unexpected instructions accepted");WriteMemory(gBase+site,&original,1);
+      community_leaderboards::Verify(gBase);
+    }
+    std::array<uint8_t,0xa0> row{};gRows=row.data();
+    Global<void*>(0x1d3d34)=row.data();Global<void*>(0x1d3d38)=row.data()+row.size();Global<int>(0x1d2c08)=0;
+    JumpTo(gBase,0x96216,reinterpret_cast<void*>(&Allowed));JumpTo(gBase,0x9627e,reinterpret_cast<void*>(&Blocked));
+    JumpTo(gBase,0x961ce,reinterpret_cast<void*>(&Blocked));
+    JumpTo(gBase,0x71dd0,reinterpret_cast<void*>(&CustomMode));
+    const uint8_t done=0xc3;WriteMemory(gBase+0x979d8,&done,1);
+    // Demonstrate the original restriction, then execute the installed branches.
+    for(int source:{0,1,2,3,-1}) {
+      At<int>(row.data(),0x9c)=source;
+      Require(Run(0x9620d)==(source==0),"Original view restriction differs");
+      Global<int>(0x1d2c34)=-1;Run(0x96366);
+      Require(Global<int>(0x1d2c34)==(source==0?2:0),"Original post restriction differs");
+    }
+    community_leaderboards::Install(gBase);
+    Require(std::strcmp(reinterpret_cast<char*>(gBase+community_leaderboards::kTooltip),community_leaderboards::kNewTooltip)==0,"Tooltip not updated");
+    for(int source:{0,1,2,3,255,256,-1})for(int custom:{0,1}) {
+      At<int>(row.data(),0x9c)=source;const auto original=row;gCustom=custom;
+      const bool supported=source>=0&&source<=2;
+      Require(Run(0x961bb)==(supported&&!custom),"View gate changed custom-mode or source eligibility");
+      Global<int>(0x1d2c34)=-1;Run(0x96366);
+      Require(Global<int>(0x1d2c34)==(supported&&!custom?2:0),"Post gate changed custom-mode or source eligibility");
+      Require(row==original,"Source metadata was modified");
+      Require(reinterpret_cast<int (__cdecl*)()>(gBase+0x9d4f0)()==source,"Native source getter changed");
+    }
+    std::puts("PASS: native view/post branches for game-folder, Documents and Workshop sources; custom modes and unknown sources blocked; row metadata unchanged; guarded installation and tooltip.");
+
+    JumpTo(gBase,0xd6d9c,reinterpret_cast<void*>(&std::malloc));JumpTo(gBase,0xd6dcf,reinterpret_cast<void*>(&std::free));
+    JumpTo(gBase,0xe6280,reinterpret_cast<void*>(&std::memcpy));JumpTo(gBase,0xe5a70,reinterpret_cast<void*>(&std::memmove));JumpTo(gBase,0xe6060,reinterpret_cast<void*>(&std::memset));
+    gVtable[22]=reinterpret_cast<void*>(&Create);gVtable[23]=reinterpret_cast<void*>(&Find);
+    gVtable[28]=reinterpret_cast<void*>(&Download);gVtable[31]=reinterpret_cast<void*>(&Upload);gContext[5]=&gStats;
+    const auto context=&Context;WriteMemory(gBase+0x15f400,&context,sizeof(context));
+    const auto reg=&Register;WriteMemory(gBase+0x15f3f0,&reg,sizeof(reg));
+    const auto unreg=&Unregister;WriteMemory(gBase+0x15f3f4,&unreg,sizeof(unreg));
+    alignas(8) std::array<uint8_t,0x2780> board{};
+    new(board.data()+0x2710)std::string("community");new(board.data()+0x2728)std::string("A29088");
+    for(const char* mode:{"","C","HA","HC","KA","KC"}) {
+      std::string name;const std::string extension(mode);
+      reinterpret_cast<std::string* (__thiscall*)(void*,std::string*,const std::string*)>(gBase+0x549c0)(board.data(),&name,&extension);
+      Require(name==std::string("community_A29088")+(*mode?"_":"")+mode,"Native leaderboard identity changed");
+      for(bool upload:{false,true})for(int result:{0,1,2}) {
+        const int finds=gFinds,uploads=gUploads,downloads=gDownloads;
+        Leaderboard request(name);request.Queue(upload);request.Tick();
+        Require(gFinds==finds+1&&gName==name&&!gCreates,"Lookup did not use find-only and the exact native name");
+        Require(gUploads==uploads&&gDownloads==downloads,"Score operation started before Steam found the table");
+        Require(gCallbackCall==kFindCall&&gCallback==request.bytes.data()+0x90,"64-bit lookup callback changed");
+        // A failed API request has no usable result/leaderboard handle.
+        request.Found(result==1,result==2);
+        if(result==1) {
+          Require(At<uint64_t>(request.bytes.data(),0x20)==kBoard,"Leaderboard handle lost high bits");
+          request.Tick();Require(gUsedBoard==kBoard,"Wrong leaderboard used");
+          Require(gUploads==uploads+upload&&gDownloads==downloads+!upload,"Native upload/download changed");
+          Require(gCallbackCall==(upload?kUploadCall:kDownloadCall)&&gCallback==request.bytes.data()+(upload?0xb0:0xd0),"Score async callback changed");
+        }else {
+          Require(At<int>(request.bytes.data(),0x34)==4,"Lookup failure did not reach native error state");
+          if(result==0)Require(At<std::string>(request.bytes.data(),0x40).find("Could not find a leaderboard")!=std::string::npos,"Missing-table error changed");
+          request.Tick();Require(gUploads==uploads&&gDownloads==downloads&&!gCreates,"Failed lookup uploaded a score or created a table");
+        }
+      }
+    }
+    At<std::string>(board.data(),0x2710).~basic_string();At<std::string>(board.data(),0x2728).~basic_string();
+    std::puts("PASS: six native mode names; find-only lookup; existing/missing/IO-failed tables; native upload/download and 64-bit callbacks. No Steam connection or real score upload.");
+    return 0;
+  }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
+}

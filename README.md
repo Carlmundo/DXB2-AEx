@@ -12,13 +12,14 @@ Windows users can ignore the next additional steps.
 
 ## Features
 ### In-Game
-- Play boards from Rival Ball - copy them into the `Boards\Rival Ball` folder
+- Play boards from Rival Ball (with leaderboards) - copy them into the `Boards\Rival Ball` folder
 - Skip the Longbow Games splash screen
 - Disable the carpet rolling screen transition
 - Hold left-click to fire the laser paddle
 - Restore the original ball launch angle
 - Block dangerous code from community content
 - Stop a specific "cheat code" from being able to reset Steam achievements
+- Use online leaderboards for specific community content
 - Fixes:
 	- Music becoming silent and/or muted notes at lower Master and Music volume settings
 	- Lives counter display cut off when you have 5 or more lives
