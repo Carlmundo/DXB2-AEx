@@ -15,18 +15,31 @@ Windows users can ignore the next additional steps.
 - Play boards from Rival Ball - copy them into the `Boards\Rival Ball` folder
 - Skip the Longbow Games splash screen
 - Disable the carpet rolling screen transition
+- Hold left-click to fire the laser paddle
+- Restore the original ball launch angle
 - Block dangerous code from community content
 - Stop a specific "cheat code" from being able to reset Steam achievements
 - Fixes:
 	- Music becoming silent and/or muted notes at lower Master and Music volume settings
 	- Lives counter display cut off when you have 5 or more lives
 	- Paddle could appear in the top left when loading a paused saved game
+	- Invisible bricks:
+		- explosion and Fireball would only reveal, not destroy them
+		- could become visible when moved with Falling Bricks and cause other bricks to become invisible in its former place
+		- were not revealed by Zap Bricks
+		- stayed hidden when changed to an exploding brick by Expand
+	- Reflected laser shots permanently using up ammo after hitting permanent bricks with Thru Brick (under Classic Rules)
 
 You can enable and disable options in `aex.cfg`.
 
 ### Editor
 - Edit boardsets included with the game (they no longer show as locked)
 - Use scripts up to 1MB (increased from 16KB)
+- Script text editor fixes:
+	- broken Undo/Redo
+	- `{}\` characters in comments deleting code
+	- typing `--` from moving preceding text to the end of the line
+	- a space being added after a final newline
 
 ## Build
 Prerequisites:
