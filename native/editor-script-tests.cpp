@@ -59,7 +59,7 @@ static void Same(int kind,const std::string& expected) {
   Require(std::memcmp(editor_scripts::Text(script),expected.data(),expected.size())==0,"Script bytes changed");
 }
 static std::string Sample(size_t length,int kind) {
-  const std::string line="-- script "+std::to_string(kind)+" abcdefghijklmnopqrstuvwxyz 0123456789\r\n";
+  const std::string line="local value=123-- script "+std::to_string(kind)+" abcdefghijklmnopqrstuvwxyz 0123456789 } { \\par\r\n";
   std::string result;
   while(result.size()<length)result+=line;
   result.resize(length);
@@ -115,6 +115,116 @@ static void BundledBoardTests(const std::filesystem::path& fixture,const std::fi
 }
 static POINT CharacterPosition(HWND control,LONG character) {
   POINT point{};SendMessageA(control,EM_POSFROMCHAR,reinterpret_cast<WPARAM>(&point),character);return point;
+}
+static std::string ControlText(HWND control) {
+  std::string text(static_cast<size_t>(GetWindowTextLengthA(control))+1,'\0');
+  text.resize(GetWindowTextA(control,text.data(),static_cast<int>(text.size())));return text;
+}
+#include "editor-input-audit.hpp"
+static void HighlightIntegrityTests(HWND parent,HWND edit) {
+  auto* dialogs=reinterpret_cast<HWND*>(gImage+0x51e3c);
+  for(int kind=0;kind<5;kind++) {
+    for(int i=0;i<5;i++)dialogs[i]=i==kind?parent:nullptr;
+    for(const char* text:{"", "\r\n", "\r\n\r\n", "return 42\r\n", "-- comment\r\n", "--[[\r\n", "--[[unfinished\r\n\r\n", "--[[closed]]\r\n"}) {
+      {editor_scripts::Updating guard;SetWindowTextA(edit,"");Require(SetWindowTextA(edit,text)!=0,"Cannot set newline fixture");}
+      SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_CHANGE),reinterpret_cast<LPARAM>(edit));
+      Require(ControlText(edit)==text,"Highlighting changed final whitespace");Same(kind,text);
+      for(int repeat=0;repeat<3;repeat++) {
+        reinterpret_cast<void (__cdecl*)(HWND,int)>(gImage+0x33b40)(edit,kind);
+        Require(ControlText(edit)==text,"Native highlighting changed script text");Same(kind,text);
+      }
+    }
+    constexpr char colored[]="local value = 42 -- comment";
+    Require(SetWindowTextA(edit,colored)!=0,"Cannot set color fixture");
+    SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_CHANGE),reinterpret_cast<LPARAM>(edit));
+    CHARRANGE keyword{0,5},comment{19,26};CHARFORMATA keywordFormat{},commentFormat{};
+    keywordFormat.cbSize=sizeof(keywordFormat);commentFormat.cbSize=sizeof(commentFormat);
+    SendMessageA(edit,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&keyword));
+    SendMessageA(edit,EM_GETCHARFORMAT,SCF_SELECTION,reinterpret_cast<LPARAM>(&keywordFormat));
+    SendMessageA(edit,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&comment));
+    SendMessageA(edit,EM_GETCHARFORMAT,SCF_SELECTION,reinterpret_cast<LPARAM>(&commentFormat));
+    Require(keywordFormat.crTextColor!=commentFormat.crTextColor,"Undo fix disabled syntax colors");Same(kind,colored);
+    constexpr char before[]="local value = 42\r\nreturn value";
+    Require(SetWindowTextA(edit,before)!=0,"Cannot set undo fixture");
+    SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_CHANGE),reinterpret_cast<LPARAM>(edit));
+    SendMessageA(edit,EM_EMPTYUNDOBUFFER,0,0);SendMessageA(edit,EM_SETSEL,2,2);
+    SendMessageA(edit,WM_CHAR,'x',1);
+    const std::string typed="loxcal value = 42\r\nreturn value";
+    Require(ControlText(edit)==typed,"Cannot type undo fixture");Same(kind,typed);
+    SendMessageA(edit,WM_UNDO,0,0);
+    Require(ControlText(edit)==before,"Highlighting prevented Undo");Same(kind,before);
+    CHARRANGE after{};SendMessageA(edit,EM_EXGETSEL,0,reinterpret_cast<LPARAM>(&after));
+    Require(after.cpMin==2&&after.cpMax==2,"Undo selected unexpected script text");
+    Require(SendMessageA(edit,EM_CANREDO,0,0)!=0,"Highlighting destroyed Redo");
+    SendMessageA(edit,EM_REDO,0,0);
+    Require(ControlText(edit)==typed,"Highlighting prevented Redo");Same(kind,typed);
+    SendMessageA(edit,WM_UNDO,0,0);SendMessageA(edit,WM_CHAR,'q',1);
+    const std::string retyped="loqcal value = 42\r\nreturn value";
+    Require(ControlText(edit)==retyped,"Typing after Undo replaced unexpected script text");Same(kind,retyped);
+    std::printf("PASS: script type %d; final newlines, native highlighting, Undo and Redo preserve text\n",kind);std::fflush(stdout);
+  }
+  for(int i=0;i<5;i++)dialogs[i]=nullptr;
+}
+static void InlineCommentTests(HWND parent,HWND edit) {
+  auto* dialogs=reinterpret_cast<HWND*>(gImage+0x51e3c);
+  for(int kind=0;kind<5;kind++) {
+    for(int i=0;i<5;i++)dialogs[i]=i==kind?parent:nullptr;
+    for(const char* fixture:{"prefix|suffix", "local value| = 42", "return| value", "    identifier|tail", "local s = \"prefix|suffix\"", "identifier|"}) {
+      for(const char* insertion:{"--","--[[","--[[ } { \\ ]]"}) {
+        std::string before=fixture;
+        const size_t offset=before.find('|');before.erase(offset,1);
+        if(std::strcmp(fixture,"identifier|")!=0)before+="\r\nlocal sentinel = 42\r\nreturn sentinel";
+        Require(SetWindowTextA(edit,before.c_str())!=0,"Cannot set inline-comment fixture");
+        SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_CHANGE),reinterpret_cast<LPARAM>(edit));
+        Require(ControlText(edit)==before,"Loading inline-comment fixture changed text");
+        CHARRANGE caret{static_cast<LONG>(offset),static_cast<LONG>(offset)};
+        SendMessageA(edit,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&caret));
+        std::string expected=before;size_t added=0;
+        for(const char* c=insertion;*c;c++) {
+          expected.insert(offset+added++,1,*c);SendMessageA(edit,WM_CHAR,static_cast<unsigned char>(*c),1);
+          if(ControlText(edit)!=expected)std::fprintf(stderr,"Inline comment reordered: fixture [%s], insertion [%s], typed %zu characters; actual [%s]\n",fixture,insertion,added,ControlText(edit).c_str());
+          Require(ControlText(edit)==expected,"Typing an inline comment reordered script text");Same(kind,expected);
+          CHARRANGE after{};SendMessageA(edit,EM_EXGETSEL,0,reinterpret_cast<LPARAM>(&after));
+          Require(after.cpMin==static_cast<LONG>(offset+added)&&after.cpMax==after.cpMin,"Inline comment moved the caret");
+        }
+        // Reopening the same text exercises the formatter before any typing.
+        Require(SetWindowTextA(edit,expected.c_str())!=0,"Cannot reload inline comment");
+        SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_CHANGE),reinterpret_cast<LPARAM>(edit));
+        Require(ControlText(edit)==expected,"Highlighting an existing inline comment reordered text");Same(kind,expected);
+      }
+    }
+    std::printf("PASS: script type %d; inline line/block comments preserve token order and caret\n",kind);std::fflush(stdout);
+  }
+  for(int i=0;i<5;i++)dialogs[i]=nullptr;
+}
+static void CommentTests(HWND parent,HWND edit) {
+  auto* dialogs=reinterpret_cast<HWND*>(gImage+0x51e3c);
+  for(int kind=0;kind<5;kind++) {
+    for(int i=0;i<5;i++)dialogs[i]=i==kind?parent:nullptr;
+    for(const char* comment:{"-- this is a comment", "local b = 2 -- inline comment", "--[[ block comment ]]", "--[[ unclosed block comment"}) {
+      for(const char* insertion:{"}","{","\\","} { \\par \\cf1 123"}) {
+        const std::string before=std::string("local a = 1\r\n")+comment+"\r\nlocal sentinel = 42\r\nreturn sentinel";
+        Require(SetWindowTextA(edit,before.c_str())!=0,"Cannot set comment fixture");
+        SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_CHANGE),reinterpret_cast<LPARAM>(edit));
+        Require(ControlText(edit)==before,"Loading a comment changed script text");
+        // Rich Edit caret offsets count CRLF as a single character.
+        const LONG position=static_cast<LONG>(before.find("comment")-1);
+        CHARRANGE caret{position,position};SendMessageA(edit,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&caret));
+        std::string expected=before;expected.insert(static_cast<size_t>(position)+1,insertion);
+        for(const char* c=insertion;*c;c++)SendMessageA(edit,WM_CHAR,static_cast<unsigned char>(*c),1);
+        if(ControlText(edit)!=expected)std::fprintf(stderr,"Comment corruption: kind %d, comment [%s], insertion [%s]\n",kind,comment,insertion);
+        Require(ControlText(edit)==expected,"Typing RTF characters in a comment corrupted following code");
+        Same(kind,expected);
+        CHARRANGE after{};SendMessageA(edit,EM_EXGETSEL,0,reinterpret_cast<LPARAM>(&after));
+        Require(after.cpMin==position+static_cast<LONG>(std::strlen(insertion))&&after.cpMax==after.cpMin,"Comment edit moved the caret");
+        // A second edit previously committed the truncated display to the boardset.
+        SendMessageA(edit,WM_CHAR,'x',1);expected.insert(static_cast<size_t>(position)+1+std::strlen(insertion),"x");
+        Require(ControlText(edit)==expected,"Editing after a comment lost following code");Same(kind,expected);
+      }
+    }
+    std::printf("PASS: script type %d; braces and backslashes in line/block comments preserve text and caret\n",kind);std::fflush(stdout);
+  }
+  for(int i=0;i<5;i++)dialogs[i]=nullptr;
 }
 static void ViewportTests(HWND parent,HWND edit) {
   auto* dialogs=reinterpret_cast<HWND*>(gImage+0x51e3c);dialogs[0]=parent;
@@ -178,7 +288,27 @@ int wmain(int argc,wchar_t** argv) {
     try{editor_scripts::Install(gImage);}catch(const std::runtime_error&){rejected=true;}
     Require(rejected&&gImage[0x32f20]==0x55&&gImage[editor_scripts::kEditBundledBoardsRva]==badBranch,"Mismatched edit branch allowed partial installation");
     editor_scripts::Write(gImage+editor_scripts::kEditBundledBoardsRva,&originalBranch,1);
+    for(const auto rva:editor_scripts::kCommentAppendRvas) {
+      const uint8_t savedOffset=gImage[rva+1];
+      editor_scripts::Write(gImage+rva+1,&invalid,1);rejected=false;
+      try{editor_scripts::Install(gImage);}catch(const std::runtime_error&){rejected=true;}
+      Require(rejected&&gImage[0x32f20]==0x55&&gImage[editor_scripts::kEditBundledBoardsRva]==originalBranch,"Mismatched comment formatter allowed partial installation");
+      editor_scripts::Write(gImage+rva+1,&savedOffset,1);
+    }
+    for(const auto& hook:editor_scripts::kCommentStarts) {
+      const uint8_t savedOffset=gImage[hook.rva+1];
+      editor_scripts::Write(gImage+hook.rva+1,&invalid,1);rejected=false;
+      try{editor_scripts::Install(gImage);}catch(const std::runtime_error&){rejected=true;}
+      Require(rejected&&gImage[0x32f20]==0x55&&gImage[editor_scripts::kEditBundledBoardsRva]==originalBranch,"Mismatched comment start allowed partial installation");
+      editor_scripts::Write(gImage+hook.rva+1,&savedOffset,1);
+    }
+    const auto paragraph=editor_scripts::kFinalParagraphRva;
+    const uint8_t savedParagraph=gImage[paragraph+1];editor_scripts::Write(gImage+paragraph+1,&invalid,1);rejected=false;
+    try{editor_scripts::Install(gImage);}catch(const std::runtime_error&){rejected=true;}
+    Require(rejected&&gImage[0x32f20]==0x55&&gImage[0x33b40]==0x55,"Mismatched final paragraph allowed partial installation");
+    editor_scripts::Write(gImage+paragraph+1,&savedParagraph,1);
     editor_scripts::Install(gImage);
+    Require(gImage[0x33b40]==0xe9,"Native highlighting hook was not installed");
     Require(gImage[editor_scripts::kEditBundledBoardsRva]==0xeb,"Editor2-equivalent branch was not installed");
     editor_scripts::Jump(gImage+0x39500,reinterpret_cast<void*>(&RefreshTitle));
     // Initialize the original C++ globals (including locale and keyword tables),
@@ -209,6 +339,10 @@ int wmain(int argc,wchar_t** argv) {
     editor_scripts::Dialog(parent,WM_INITDIALOG,0,0);editor_scripts::originalDialog=original;
     Require(SendMessageA(edit,EM_GETLIMITTEXT,0,0)==editor_scripts::kMaxTextBytes,"Script input limit was not raised");
     SendMessageA(edit,EM_SETEVENTMASK,0,ENM_CHANGE);
+    if(GetEnvironmentVariableA("AEX_EDITOR_INPUT_AUDIT",nullptr,0))InputAudit(parent,edit);
+    HighlightIntegrityTests(parent,edit);
+    InlineCommentTests(parent,edit);
+    CommentTests(parent,edit);
     ViewportTests(parent,edit);
     auto* dialogs=reinterpret_cast<HWND*>(gImage+0x51e3c);
     std::array<std::string,5> expected;

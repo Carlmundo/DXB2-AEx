@@ -3,10 +3,13 @@
 #define NOMINMAX
 #include <windows.h>
 #include <richedit.h>
+#include <richole.h>
+#include <tom.h>
 #include <bcrypt.h>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <vector>
 #pragma comment(lib,"bcrypt.lib")
 
@@ -14,8 +17,13 @@ namespace editor_scripts {
 inline constexpr int kBufferBytes=1024*1024;
 inline constexpr int kMaxTextBytes=kBufferBytes-1;
 inline constexpr uint32_t kEditBundledBoardsRva=0x2c312;
+inline constexpr uint32_t kCommentAppendRvas[]={0x38cdb,0x38d1e,0x38dc2};
+inline constexpr uint32_t kFinalParagraphRva=0x38fba;
+struct CommentStart {uint32_t rva,original;};
+inline constexpr CommentStart kCommentStarts[]={{0x38e81,0xe690},{0x38ebf,0x1b000}};
 inline uint8_t* base=nullptr;
 inline DLGPROC originalDialog=nullptr;
+inline void (__cdecl* originalHighlight)(HWND,int)=nullptr;
 inline thread_local bool updating=false;
 
 inline bool VerifiedExecutable(const wchar_t* path) noexcept {
@@ -54,6 +62,11 @@ inline void Jump(uint8_t* at,const void* destination) {
   const auto relative=static_cast<uint32_t>(reinterpret_cast<uintptr_t>(destination)-reinterpret_cast<uintptr_t>(at+5));
   std::memcpy(bytes+1,&relative,4);Write(at,bytes,sizeof(bytes));
 }
+inline void Call(uint8_t* at,const void* destination) {
+  uint8_t bytes[5]={0xe8};
+  const auto relative=static_cast<uint32_t>(reinterpret_cast<uintptr_t>(destination)-reinterpret_cast<uintptr_t>(at+5));
+  std::memcpy(bytes+1,&relative,4);Write(at,bytes,sizeof(bytes));
+}
 
 // Use the editor's own string allocator/assignment routine. Passing a DLL's
 // std::string across CRT boundaries would give the editor ownership of foreign memory.
@@ -65,6 +78,66 @@ inline const char* Text(const void* script) {
   const auto* bytes=static_cast<const uint8_t*>(script);
   return *reinterpret_cast<const uint32_t*>(bytes+0x14)>=16?*reinterpret_cast<const char* const*>(bytes):reinterpret_cast<const char*>(bytes);
 }
+// These three formatter calls append comment substrings directly to an RTF
+// document. Escape only the comment payload, leaving the formatter's own RTF
+// and Lua tokenization intact. __fastcall's unused EDX bridges __thiscall.
+inline void* __fastcall AppendComment(void* destination,void*,const void* source,size_t offset,size_t count) {
+  const size_t length=Length(source);
+  if(offset>length)throw std::out_of_range("Invalid editor comment range");
+  if(count>length-offset)count=length-offset;
+  const char* text=Text(source)+offset;
+  std::string escaped;escaped.reserve(count);
+  for(size_t i=0;i<count;i++) {
+    const char c=text[i];
+    if(c=='\\'||c=='{'||c=='}')escaped+='\\';
+    escaped+=c;
+  }
+  return reinterpret_cast<void* (__thiscall*)(void*,const char*,size_t)>(base+0xe690)(destination,escaped.data(),escaped.size());
+}
+inline void* __fastcall AppendFinalParagraph(void* destination,void*,const char*,size_t) {
+  // RTF consumes its final paragraph terminator. Add another terminator to
+  // preserve an ending newline instead of the stock formatter's literal space.
+  // With an unclosed block-comment group, Rich Edit already keeps that newline.
+  const char* rtf=Text(destination);const size_t length=Length(destination);int depth=0;
+  for(size_t i=0;i<length;i++) {
+    if(rtf[i]=='\\'){if(i+1<length)i++;}
+    else if(rtf[i]=='{')depth++;
+    else if(rtf[i]=='}')depth--;
+  }
+  if(depth>1)return destination;
+  return reinterpret_cast<void* (__thiscall*)(void*,const char*,size_t)>(base+0xe690)(destination,"\\par ",5);
+}
+// The formatter buffers identifiers/keywords in its stack-local token context.
+// Flush that context before appending either comment's opening RTF, otherwise
+// an adjacent token (identifier--comment) is emitted after the comment.
+// Preserve the original destination in ECX and tail-call the original append
+// routine with its untouched arguments and return address.
+inline __declspec(naked) void BeginBlockComment() {
+  __asm {
+    push ecx
+    lea ecx,[ebp-260h]
+    mov eax,base
+    add eax,380e0h
+    call eax
+    pop ecx
+    mov eax,base
+    add eax,0e690h
+    jmp eax
+  }
+}
+inline __declspec(naked) void BeginLineComment() {
+  __asm {
+    push ecx
+    lea ecx,[ebp-260h]
+    mov eax,base
+    add eax,380e0h
+    call eax
+    pop ecx
+    mov eax,base
+    add eax,1b000h
+    jmp eax
+  }
+}
 inline int Kind(HWND dialog) {
   const auto* dialogs=reinterpret_cast<const HWND*>(base+0x51e3c);
   for(int i=0;i<5;i++)if(dialogs[i]==dialog)return i;
@@ -75,8 +148,26 @@ struct Updating {
   Updating(){updating=true;}
   ~Updating(){updating=previous;}
 };
+struct SuspendedUndo {
+  ITextDocument* document=nullptr;
+  explicit SuspendedUndo(HWND control) {
+    IRichEditOle* richOle=nullptr;
+    SendMessageA(control,EM_GETOLEINTERFACE,0,reinterpret_cast<LPARAM>(&richOle));
+    if(richOle) {
+      richOle->QueryInterface(__uuidof(ITextDocument),reinterpret_cast<void**>(&document));richOle->Release();
+      if(document&&FAILED(document->Undo(tomSuspend,nullptr))){document->Release();document=nullptr;}
+    }
+  }
+  ~SuspendedUndo(){if(document){document->Undo(tomResume,nullptr);document->Release();}}
+};
 
 inline void Highlight(HWND control,int kind) {
+  Updating guard;
+  // Replacing the RTF document must not become an undoable user edit. Doing
+  // so during EN_CHANGE also destroys redo and can leave the whole script
+  // selected after Undo. Suspend recording without clearing the user's edits.
+  SuspendedUndo undo(control);
+  if(!undo.document)return;
   // The original formatter saves the caret using the packed 16-bit EM_GETSEL
   // return value. Preserve the full selection for long scripts.
   CHARRANGE selection{};POINT scroll{};
@@ -84,7 +175,7 @@ inline void Highlight(HWND control,int kind) {
   const auto firstVisibleLine=SendMessageA(control,EM_GETFIRSTVISIBLELINE,0,0);
   SendMessageA(control,EM_GETSCROLLPOS,0,reinterpret_cast<LPARAM>(&scroll));
   SendMessageA(control,WM_SETREDRAW,FALSE,0);
-  reinterpret_cast<void (__cdecl*)(HWND,int)>(base+0x33b40)(control,kind);
+  originalHighlight(control,kind);
   SendMessageA(control,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&selection));
   // EM_GETSCROLLPOS returns 16-bit pixel coordinates even in POINT's 32-bit
   // fields. Restore horizontal scrolling, then recover the vertical viewport
@@ -150,37 +241,68 @@ inline void Verify(uint8_t* image) {
   constexpr uint8_t getScript[]={0x55,0x8b,0xec,0x8b,0xc1,0x83,0xec,0x0c};
   constexpr uint8_t assign[]={0x55,0x8b,0xec,0x53,0x8b,0x5d,0x08,0x56,0x8b,0xf1};
   constexpr uint8_t format[]={0x55,0x8b,0xec,0x83,0xec,0x30};
+  constexpr uint8_t append[]={0x55,0x8b,0xec,0x53,0x8b,0x5d,0x08,0x56,0x8b,0xf1};
+  for(const auto rva:kCommentAppendRvas) {
+    int32_t relative=0;std::memcpy(&relative,image+rva+1,sizeof(relative));
+    if(image[rva]!=0xe8||static_cast<int64_t>(rva)+5+relative!=0xe4f0)
+      throw std::runtime_error("Unsupported editor comment formatter");
+  }
+  for(const auto& hook:kCommentStarts) {
+    int32_t relative=0;std::memcpy(&relative,image+hook.rva+1,sizeof(relative));
+    if(image[hook.rva]!=0xe8||static_cast<int64_t>(hook.rva)+5+relative!=hook.original)
+      throw std::runtime_error("Unsupported editor comment start");
+  }
+  int32_t paragraphRelative=0;std::memcpy(&paragraphRelative,image+kFinalParagraphRva+1,sizeof(paragraphRelative));
+  if(image[kFinalParagraphRva]!=0xe8||static_cast<int64_t>(kFinalParagraphRva)+5+paragraphRelative!=0xe690)
+    throw std::runtime_error("Unsupported editor final paragraph");
+  constexpr uint8_t flushToken[]={0x8d,0x8d,0xa0,0xfd,0xff,0xff,0xe8,0x7b,0xf1,0xff,0xff};
+  if(std::memcmp(image+0x38f5a,flushToken,sizeof(flushToken)))
+    throw std::runtime_error("Unsupported editor token context");
   // The patched edtior may be used and differs only in this branch: JE +0x25 becomes JMP +0x25.
   // Accept its already-patched form as well as the original editor.
   constexpr uint8_t lockBranchTail[]={0x25,0x57,0x8b,0xcb,0xe8,0x64,0xe7,0xff,0xff,0x84,0xc0,0x75,0x19};
   const auto lockBranch=image[kEditBundledBoardsRva];
   if(std::memcmp(image+0x32f20,entry,sizeof(entry))||std::memcmp(image+0x3346f,oldRead,sizeof(oldRead))||
      std::memcmp(image+0x32480,getScript,sizeof(getScript))||std::memcmp(image+0xe7b0,assign,sizeof(assign))||
-     std::memcmp(image+0x33b40,format,sizeof(format))||(lockBranch!=0x74&&lockBranch!=0xeb)||
+     std::memcmp(image+0x33b40,format,sizeof(format))||std::memcmp(image+0xe690,append,sizeof(append))||(lockBranch!=0x74&&lockBranch!=0xeb)||
      std::memcmp(image+kEditBundledBoardsRva+1,lockBranchTail,sizeof(lockBranchTail)))
     throw std::runtime_error("Unsupported editor instructions");
 }
 inline void Install(uint8_t* image) {
   Verify(image);
-  auto* trampoline=static_cast<uint8_t*>(VirtualAlloc(nullptr,10,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));
+  auto* trampoline=static_cast<uint8_t*>(VirtualAlloc(nullptr,21,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));
   if(!trampoline)throw std::runtime_error("Cannot allocate editor script trampoline");
   std::memcpy(trampoline,image+0x32f20,5);
   trampoline[5]=0xe9;
   const auto relative=static_cast<uint32_t>(reinterpret_cast<uintptr_t>(image+0x32f25)-reinterpret_cast<uintptr_t>(trampoline+10));
   std::memcpy(trampoline+6,&relative,4);
+  uint8_t originalFormat[6];std::memcpy(originalFormat,image+0x33b40,sizeof(originalFormat));
+  std::memcpy(trampoline+10,originalFormat,sizeof(originalFormat));trampoline[16]=0xe9;
+  const auto formatRelative=static_cast<uint32_t>(reinterpret_cast<uintptr_t>(image+0x33b46)-reinterpret_cast<uintptr_t>(trampoline+21));
+  std::memcpy(trampoline+17,&formatRelative,4);
   DWORD old=0;
-  if(!VirtualProtect(trampoline,10,PAGE_EXECUTE_READ,&old)){VirtualFree(trampoline,0,MEM_RELEASE);throw std::runtime_error("Cannot protect editor script trampoline");}
-  FlushInstructionCache(GetCurrentProcess(),trampoline,10);
+  if(!VirtualProtect(trampoline,21,PAGE_EXECUTE_READ,&old)){VirtualFree(trampoline,0,MEM_RELEASE);throw std::runtime_error("Cannot protect editor script trampoline");}
+  FlushInstructionCache(GetCurrentProcess(),trampoline,21);
   base=image;originalDialog=reinterpret_cast<DLGPROC>(trampoline);
+  originalHighlight=reinterpret_cast<void (__cdecl*)(HWND,int)>(trampoline+10);
   const auto originalBranch=image[kEditBundledBoardsRva];
   try {
+    for(const auto rva:kCommentAppendRvas)Call(image+rva,reinterpret_cast<const void*>(&AppendComment));
+    Call(image+kCommentStarts[0].rva,reinterpret_cast<const void*>(&BeginBlockComment));
+    Call(image+kCommentStarts[1].rva,reinterpret_cast<const void*>(&BeginLineComment));
+    Call(image+kFinalParagraphRva,reinterpret_cast<const void*>(&AppendFinalParagraph));
     if(originalBranch==0x74) {
       const uint8_t jump=0xeb;Write(image+kEditBundledBoardsRva,&jump,1);
     }
+    Jump(image+0x33b40,reinterpret_cast<const void*>(&Highlight));
     Jump(image+0x32f20,reinterpret_cast<const void*>(&Dialog));
   }catch(...) {
+    try{Write(image+0x33b40,originalFormat,sizeof(originalFormat));}catch(...){}
+    try{Call(image+kFinalParagraphRva,image+0xe690);}catch(...){}
+    for(const auto& hook:kCommentStarts)try{Call(image+hook.rva,image+hook.original);}catch(...){}
+    for(const auto rva:kCommentAppendRvas)try{Call(image+rva,image+0xe4f0);}catch(...){}
     if(originalBranch==0x74)try{Write(image+kEditBundledBoardsRva,&originalBranch,1);}catch(...){}
-    base=nullptr;originalDialog=nullptr;VirtualFree(trampoline,0,MEM_RELEASE);throw;
+    base=nullptr;originalDialog=nullptr;originalHighlight=nullptr;VirtualFree(trampoline,0,MEM_RELEASE);throw;
   }
 }
 }
