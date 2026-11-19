@@ -296,6 +296,103 @@ static void RunPatched() {
 }
 }
 
+namespace multiply_tests {
+static void* gEntry=nullptr;
+static std::vector<uint8_t> gCopy;
+static std::vector<std::vector<uint8_t>> gExpected;
+static std::array<bool,740> gTouched{};
+static int gLayer=0,gDraws=0;
+static bool gCheckReveal=false;
+// Replace only the temporary board-copy allocation, retaining the native
+// pickup's snapshot reads, neighbourhood traversal, layer selection and writes.
+static void* __fastcall CopyBoard(void* destination,void*,void* source) {
+  std::memcpy(destination,source,0x5c);
+  auto** layers=reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(source)+8);
+  gCopy.assign(layers[0],layers[1]);
+  auto** copy=reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(destination)+8);
+  copy[0]=gCopy.data();copy[1]=copy[2]=gCopy.data()+gCopy.size();
+  return destination;
+}
+static void __cdecl Dirty(int x,int y) {
+  ++gDraws;gTouched[x*20+y]=true;
+  if(gCheckReveal)Require(!(falling_tests::Cell(falling_tests::gStorage,gLayer,x,y)[2]&2),"Multiply redraw observed a hidden replacement brick");
+}
+static __declspec(naked) void Execute() {
+  __asm {
+    push ebp
+    mov ebp,esp
+    sub esp,100h
+    push ebx
+    push esi
+    push edi
+    call dword ptr [gEntry]
+    pop edi
+    pop esi
+    pop ebx
+    mov esp,ebp
+    pop ebp
+    ret
+  }
+}
+static void PrepareMultiply(int width,int stride,int layer,int x,int y,bool hidden) {
+  falling_tests::Prepare(width,stride,3);gLayer=layer;gTouched.fill(false);
+  gDefinitions.fill(0);gDefinitions[2*9]=1;
+  At<void*>(0x1bee6c)=gDefinitions.data();At<void*>(0x1bee70)=gDefinitions.data()+gDefinitions.size();
+  for(int z=0;z<3;z++) {
+    falling_tests::gStorage[32+z*stride+stride-16]=1;
+    for(int col=0;col<width;col++)for(int row=0;row<20;row++) {
+      auto* cell=falling_tests::Cell(falling_tests::gStorage,z,col,row);
+      const auto value=static_cast<uint32_t>(z*740+col*20+row);
+      cell[0]=0x12340000u+value;cell[3]=0x43210000u+value;
+      cell[1]=value%5<2?1:0;cell[2]=0xa5a50001u|(hidden?2u:0u);
+    }
+  }
+  // Keep this exploding source exposed through every layer above it.
+  for(int z=layer+1;z<3;z++)falling_tests::Cell(falling_tests::gStorage,z,x,y)[1]=0;
+  falling_tests::Cell(falling_tests::gStorage,layer,x,y)[1]=2;
+  gScores=gPoints=gReveals=0;
+}
+static void Multiply() {
+  gEntry=gBase+0x836b5;gDraws=0;Execute();
+  Require(At<int>(0x1a7124)==123&&At<int>(0x1a712c)==7&&gScores==0,"Multiply changed hit/destruction accounting");
+  Require(gDraws>0,"Multiply did not update any neighbours");
+}
+static void ReproduceOriginal() {
+  JumpTo(gBase,0x53ab0,reinterpret_cast<void*>(&CopyBoard));
+  JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&Dirty));
+  const uint8_t done=0xc3;WriteMemory(gBase+0x83e0a,&done,1);
+  PrepareMultiply(26,0x2094,0,5,6,true);Multiply();
+  auto* overwritten=falling_tests::Cell(falling_tests::gStorage,0,6,6);
+  Require(overwritten[1]==2&&(overwritten[2]&2),"Original hidden Multiply Exploding replacement bug not reproduced");
+  std::puts("PASS: original Multiply Exploding leaves replacement exploding bricks hidden");
+}
+static void CaptureReferences() {
+  JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&Dirty));
+  for(int width:{20,26,37})for(int layer:{0,1,2})for(int x:{0,width/2,width-1})for(int y:{0,10,19})for(bool hidden:{false,true}) {
+    PrepareMultiply(width,0x2e54,layer,x,y,hidden);
+    for(int step=0;step<2;step++) {
+      Multiply();auto expected=falling_tests::gStorage;
+      for(int col=0;col<width;col++)for(int row=0;row<20;row++)if(gTouched[col*20+row])
+        falling_tests::Cell(expected,layer,col,row)[2]&=~2u;
+      gExpected.push_back(std::move(expected));
+    }
+  }
+  JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&::Dirty));
+}
+static void RunPatched() {
+  JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&Dirty));gCheckReveal=true;size_t index=0;
+  for(int width:{20,26,37})for(int layer:{0,1,2})for(int x:{0,width/2,width-1})for(int y:{0,10,19})for(bool hidden:{false,true}) {
+    PrepareMultiply(width,0x2e54,layer,x,y,hidden);
+    for(int step=0;step<2;step++) {
+      Multiply();
+      Require(falling_tests::gStorage==gExpected[index++],"Multiply changed native brick placement, unrelated hidden cells, other flags, layers or metadata");
+    }
+  }
+  gCheckReveal=false;
+  std::printf("PASS: %zu native Multiply Exploding cases; replacements visible before redraw, native placement preserved across widths, layers, edges and repeated pickups\n",index);
+}
+}
+
 int wmain(int argc,wchar_t** argv) {
   if(argc!=2){std::fprintf(stderr,"Usage: invisible-bricks-tests.exe path-to-DXBall2.exe\n");return 2;}
   SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,Fault);
@@ -317,6 +414,13 @@ int wmain(int argc,wchar_t** argv) {
     Require(rejected,"Unexpected zap instruction was accepted");
     Require(gBase[0x85f40]==original&&gBase[0x5c725]==moveOriginal,"Failed zap verification partially installed a fix");
     WriteMemory(gBase+0x8c27b,&zapOriginal,1);
+    for(const auto rva:invisible_bricks::multiplyCalls) {
+      const uint8_t before=gBase[rva];WriteMemory(gBase+rva,&wrong,1);
+      rejected=false;try{invisible_bricks::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
+      Require(rejected,"Unexpected multiply call was accepted");
+      Require(gBase[0x85f40]==original&&gBase[0x5c725]==moveOriginal&&gBase[0x8c27b]==zapOriginal,"Failed multiply verification partially installed a fix");
+      WriteMemory(gBase+rva,&before,1);
+    }
     JumpTo(gBase,0x55a70,reinterpret_cast<void*>(&Margin));
     JumpTo(gBase,0x810d0,reinterpret_cast<void*>(&NoScript));
     JumpTo(gBase,0x538a0,reinterpret_cast<void*>(&SplashEligible));
@@ -343,9 +447,11 @@ int wmain(int argc,wchar_t** argv) {
     }
     zap_tests::ReproduceOriginal();
     falling_tests::ReproduceOriginal();
+    multiply_tests::ReproduceOriginal();
     JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&Dirty));
     ApplyGridPatches(gBase);
     zap_tests::CaptureReferences();
+    multiply_tests::CaptureReferences();
     invisible_bricks::Install(gBase);
     Geometry geometry;geometry.base=gBase;geometry.Install();
     int cases=0;
@@ -371,6 +477,7 @@ int wmain(int argc,wchar_t** argv) {
     std::puts("PASS: native fireball splash destroys all nine hidden bricks and updates the board counters once per brick");
     falling_tests::RunPatched();
     zap_tests::RunPatched();
+    multiply_tests::RunPatched();
     return 0;
   }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }

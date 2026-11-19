@@ -6,6 +6,7 @@ inline uint8_t* game=nullptr;
 inline void* reveal=nullptr;
 inline void* visible=nullptr;
 inline void* zapNext=nullptr;
+inline constexpr uint32_t multiplyCalls[]={0x83788,0x837ba,0x837e6};
 
 // Inside HitBrick (00485B90), the native locals already distinguish explosion
 // objects (-38h) and fireball damage (-3Ch). Let those hits use the same path
@@ -37,6 +38,14 @@ inline void __cdecl MoveBrick(int x,int y,int id,int layer) {
   using SetBrick=void (__cdecl*)(int,int,int,int);
   reinterpret_cast<SetBrick>(game+0x8c1a0)(x,y,id,layer);
 }
+inline bool __fastcall MultiplyBrick(void* boardset,void*,int x,int y,int id,int layer) {
+  // Multiply Exploding replaces the brick ID but leaves the destination's
+  // flags in place. Its new exploding brick must not inherit invisibility.
+  using GetCell=uint32_t* (__thiscall*)(void*,int,int,int);
+  reinterpret_cast<GetCell>(game+0x85890)(boardset,x,y,layer)[2]&=~2u;
+  using SetBrick=bool (__thiscall*)(void*,int,int,int,int);
+  return reinterpret_cast<SetBrick>(game+0x8adf0)(boardset,x,y,id,layer);
+}
 // Zap Bricks already visits every cell on visible layers. Reveal each cell
 // and set its native changed flag so even a reveal-only zap redraws the board.
 // Replay the displaced brick-definition pointer load before continuing.
@@ -64,6 +73,13 @@ inline void Verify(uint8_t* base) {
   std::memcpy(zapLoad+2,&definitions,sizeof(definitions));
   if(std::memcmp(base+0x8c27b,zapLoad,sizeof(zapLoad)))
     throw std::runtime_error("Unexpected Zap Bricks cell update");
+  for(const auto rva:multiplyCalls) {
+    uint8_t expected[]={0xe8,0,0,0,0};
+    const uint32_t relative=0x8adf0-(rva+5);
+    std::memcpy(expected+1,&relative,sizeof(relative));
+    if(std::memcmp(base+rva,expected,sizeof(expected)))
+      throw std::runtime_error("Unexpected Multiply Exploding brick update");
+  }
 }
 inline void Install(uint8_t* base) {
   Verify(base);game=base;reveal=base+0x85f48;visible=base+0x860f6;
@@ -74,5 +90,9 @@ inline void Install(uint8_t* base) {
   zapNext=base+0x8c281;
   JumpTo(base,0x8c27b,reinterpret_cast<void*>(&ZapReveal));
   const uint8_t nop=0x90;WriteMemory(base+0x8c280,&nop,1);
+  for(const auto rva:multiplyCalls) {
+    const auto target=static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&MultiplyBrick)-reinterpret_cast<uintptr_t>(base+rva+5));
+    WriteMemory(base+rva+1,&target,sizeof(target));
+  }
 }
 }
