@@ -5,3 +5,4 @@ docs/
 *.pdb
 *.ilk
 *.log
+build-local.bat
