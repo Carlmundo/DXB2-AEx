@@ -7,7 +7,7 @@ inline constexpr uint32_t kViewGate=0x9620d,kPostGate=0x96366,kTooltip=0x16a700;
 inline constexpr uint8_t kViewBytes[]={0xe8,0xde,0x72,0,0,0x85,0xc0,0x75,0x68};
 inline constexpr uint8_t kPostBytes[]={0x83,0xbc,0x30,0x9c,0,0,0,0,0x75,0x21};
 inline constexpr char kOldTooltip[]="View the online high scores for this boardset. (Online scores are not available for community content)";
-inline constexpr char kNewTooltip[]="View the online high scores for this boardset. (if available)";
+inline constexpr char kNewTooltip[]="View the online high scores for this boardset (if available).";
 static_assert(sizeof(kNewTooltip)<=sizeof(kOldTooltip));
 
 inline int __cdecl LookupSource() noexcept {
