@@ -5,6 +5,8 @@ if not exist "%VS_TOOLS%" exit /b 2
 call "%VS_TOOLS%" >nul
 if errorlevel 1 exit /b %errorlevel%
 if not exist build mkdir build
+node tools\project-version.mjs .scratch\aex-version.h
+if errorlevel 1 exit /b %errorlevel%
 node tools\native-manifest.mjs .scratch\game\DXBall2.exe .scratch\dxball2.asm .scratch\patches.json
 if errorlevel 1 exit /b %errorlevel%
 node tools\geometry-manifest.mjs .scratch\dxball2.asm .scratch\geometry.h

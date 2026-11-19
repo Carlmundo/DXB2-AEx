@@ -8,6 +8,7 @@
 #include "screen-transition.hpp"
 #include "dangerous-lua.hpp"
 #include "version-proxy.hpp"
+#include "aex-version.h"
 #include "nostat.hpp"
 #include "lives-counter.hpp"
 #include "music-volume.hpp"
@@ -92,6 +93,23 @@ static void ReplaceCall(uint32_t rva,void* target,uint32_t oldTarget) {
   auto relative=static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target)-reinterpret_cast<uintptr_t>(where+5));
   WriteMemory(where+1,&relative,4);
 }
+static BOOL WINAPI MenuVersion(const void* block,const wchar_t* subBlock,void** output,UINT* length) {
+  using Query=BOOL (WINAPI*)(const void*,const wchar_t*,void**,UINT*);
+  const auto result=reinterpret_cast<Query>(gGame+0xbd396)(block,subBlock,output,length);
+  if(!result||!output||!*output||!length||!*length)return result;
+  static constexpr wchar_t suffix[]=L" / AEx " AEX_VERSION_WIDE;
+  static thread_local wchar_t version[128];
+  constexpr size_t suffixLength=sizeof(suffix)/sizeof(*suffix)-1;
+  // This call site queries FileVersion. Keep the game's version and revision,
+  // and return a separate buffer without changing the executable's metadata.
+  if(*length>sizeof(version)/sizeof(*version)-suffixLength)return result;
+  const auto* original=static_cast<const wchar_t*>(*output);
+  if(original[*length-1]!=L'\0')return result;
+  std::memcpy(version,original,(*length-1)*sizeof(wchar_t));
+  std::memcpy(version+*length-1,suffix,sizeof(suffix));
+  *output=version;*length+=static_cast<UINT>(suffixLength);
+  return result;
+}
 static int __fastcall BoardMargin(void* boardset,void*) {
   const auto width=*reinterpret_cast<int*>(static_cast<uint8_t*>(boardset)+0x26ac);
   return (*reinterpret_cast<int*>(gGame+0x1a4094)-PlayfieldWidth(width))/2;
@@ -153,6 +171,8 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     if(gGame[0x90060]!=5||gGame[0x91655]!=5||*reinterpret_cast<uint32_t*>(gGame+0x90598)!=26||*reinterpret_cast<uint32_t*>(gGame+0x90540)!=0x820)
       throw std::runtime_error("Unexpected save format operands");
     if(gGame[0x55e44]!=0x74||gGame[0x55e45]!=0x50)throw std::runtime_error("Unexpected plain-BDST branch");
+    const uint8_t versionQuery[]={0xe8,0x89,0x78,0x03,0x00};
+    if(std::memcmp(gGame+0x85b08,versionQuery,sizeof(versionQuery)))throw std::runtime_error("Unexpected menu version query");
     if(config.disableAchievementReset)VerifyNostatSoundOnly(gGame);
     if(config.skipLongbow)VerifySkipLongbow(gGame);
     if(config.noScreenTransition)VerifyNoScreenTransition(gGame);
@@ -169,6 +189,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     if(fixMusic)music_volume::Verify(gGame,audio);
     if(config.disableAchievementReset)InstallNostatSoundOnly(gGame);
     ApplyGridPatches(gGame);
+    ReplaceCall(0x85b08,reinterpret_cast<void*>(&MenuVersion),0xbd396);
     ReplaceCall(0x55e56,reinterpret_cast<void*>(&DecodeBoard),0xab8c0);
     ReplaceCall(0x55ef4,reinterpret_cast<void*>(&BoardChecksum),0xab700);
     ReplaceCall(0x8ff2e,reinterpret_cast<void*>(&DecodeSave),0xab8c0);
