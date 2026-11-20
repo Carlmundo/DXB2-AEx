@@ -21,11 +21,15 @@ cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\save-ha
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /Fo:build\ /Fe:build\save-format-tests.exe native\save-format-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /Fo:build\ /Fe:build\config-tests.exe native\config-tests.cpp /link /DYNAMICBASE /NXCOMPAT
+if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\startup-tests.exe native\startup-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\transition-tests.exe native\transition-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\dangerous-lua-tests.exe native\dangerous-lua-tests.cpp /link /DYNAMICBASE /NXCOMPAT
+if errorlevel 1 exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\aex-update-tests.exe native\aex-update-tests.cpp /link /DYNAMICBASE /NXCOMPAT /MANIFEST:EMBED /MANIFESTUAC:"level='asInvoker' uiAccess='false'"
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\version-proxy-tests.exe native\version-proxy-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%

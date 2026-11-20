@@ -7,6 +7,7 @@
 #include "skip-longbow.hpp"
 #include "screen-transition.hpp"
 #include "dangerous-lua.hpp"
+#include "aex-update.hpp"
 #include "version-proxy.hpp"
 #include "aex-version.h"
 #include "nostat.hpp"
@@ -36,8 +37,7 @@ static thread_local uint32_t gSaveChecksum=0;
 
 static AexConfig ReadConfig(const wchar_t* path) noexcept {
   try {
-    std::ifstream config(path);
-    return ReadAexConfig(config);
+    return LoadAexConfig(path);
   }catch(...){return {};}
 }
 
@@ -97,6 +97,7 @@ static void ReplaceCall(uint32_t rva,void* target,uint32_t oldTarget) {
   WriteMemory(where+1,&relative,4);
 }
 static BOOL WINAPI MenuVersion(const void* block,const wchar_t* subBlock,void** output,UINT* length) {
+  aex_update::CheckForUpdatesOnce();
   using Query=BOOL (WINAPI*)(const void*,const wchar_t*,void**,UINT*);
   const auto result=reinterpret_cast<Query>(gGame+0xbd396)(block,subBlock,output,length);
   if(!result||!output||!*output||!length||!*length)return result;
@@ -180,6 +181,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     if(config.skipLongbow)VerifySkipLongbow(gGame);
     if(config.noScreenTransition)VerifyNoScreenTransition(gGame);
     if(config.disableDangerousLua)VerifyDisableDangerousLua(gGame);
+    aex_update::Verify(gGame);
     VerifyLivesCounter(gGame);
     loaded_paddle::Verify(gGame);
     invisible_bricks::Verify(gGame);
@@ -222,7 +224,9 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     const uint8_t nops[2]={0x90,0x90};WriteMemory(gGame+0x55e44,nops,2);
     if(config.skipLongbow){InstallSkipLongbow(gGame);Log("Longbow Games startup logo skipped.");}
     if(config.noScreenTransition){InstallNoScreenTransition(gGame);Log("Screen transition animations disabled.");}
+    aex_update::Install(gGame);
     if(config.disableDangerousLua){InstallDisableDangerousLua(gGame);Log("Dangerous Lua calls and native module loaders disabled; writable io.open modes changed to r.");}
+    aex_update::gCheckForUpdates=config.checkForUpdates;
     AddVectoredExceptionHandler(1,Fault);
     Log("DX-Ball 2 AEx experimental native grid and board adapter installed.");
   } catch(const std::exception& error) {Log(error.what());return FALSE;}

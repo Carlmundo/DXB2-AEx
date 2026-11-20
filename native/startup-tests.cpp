@@ -23,6 +23,23 @@ static DWORD WINAPI Ticks() {return gTickCalls++?gElapsed:0;}
 int wmain(int argc,wchar_t** argv) {
   if(argc!=2){std::fprintf(stderr,"Usage: startup-tests.exe path-to-DXBall2.exe\n");return 2;}
   try {
+    Require(AexConfig{}.checkForUpdates,"Update checks must default on");
+    for(const char* value:{"0","2","true","01","1junk","","1 = 1"}) {
+      std::istringstream text(std::string("CheckForUpdates = ")+value);
+      Require(!ReadAexConfig(text).checkForUpdates,"Update check enabled by a non-1 value");
+    }
+    for(const auto& sample:{std::pair<const char*,bool>{"CheckForUpdates=1",true},
+        {"\xef\xbb\xbf# config\n CheckForUpdates = 1 # check online\n",true},
+        {"CheckForUpdates=1\nCheckForUpdates=0",false},
+        {"CheckForUpdates=1\nCheckForUpdates=invalid",false},
+        {"CheckForUpdates=0\nCheckForUpdates=1",true},
+        {"# CheckForUpdates=1\nOtherCheckForUpdates=1\ncheckforupdates=1",true}}) {
+      std::istringstream text(sample.first);
+      Require(ReadAexConfig(text).checkForUpdates==sample.second,"Update check config parsing changed");
+    }
+    std::istringstream failedCheck("CheckForUpdates=1");failedCheck.setstate(std::ios::badbit);
+    Require(ReadAexConfig(failedCheck).checkForUpdates,"Read failure must use update-check default");
+    std::puts("PASS: update checks default on; explicit values, BOM/comments/duplicates/read errors");
     CheckConfig("",false,false);
     for(const char* value:{"0","2","true","01","1junk","","1 = 1"})
       CheckConfig(std::string("HoldClickFire = ")+value,false,false);
