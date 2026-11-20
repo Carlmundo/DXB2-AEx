@@ -1,5 +1,5 @@
-# DX-Ball 2 AEx
-Anniversary Extras for DX-Ball 2: 20th Anniversary Edition
+# AEx
+Anniversary Extra for DX-Ball 2: 20th Anniversary Edition
 
 ## Install
 1. [Download the latest version](https://github.com/Carlmundo/DXB2-AEx/releases/latest)
