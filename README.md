@@ -28,7 +28,7 @@ Windows users can ignore the next additional steps.
 	- Lives counter display cut off when you have 5 or more lives
 	- Paddle could appear in the top left when loading a paused saved game
 	- Invisible bricks:
-		- explosion and Fireball would only reveal, not destroy them
+		- explosion, Lightning and Fireball would only reveal, not destroy them
 		- could become visible when moved with Falling Bricks and cause other bricks to become invisible in its former place
 		- were not revealed by Zap Bricks
 		- stayed hidden when changed to an exploding brick by Expand
