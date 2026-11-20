@@ -24,6 +24,7 @@ Windows users can ignore the next additional steps.
 - Stop a specific "cheat code" from being able to reset Steam achievements
 - Use online leaderboards for specific community content
 - Fixes:
+	- Online scores could not be viewed before submitting a score for that boardset
 	- Music becoming silent and/or muted notes at lower Master and Music volume settings
 	- Lives counter display cut off when you have 5 or more lives
 	- Paddle could appear in the top left when loading a paused saved game

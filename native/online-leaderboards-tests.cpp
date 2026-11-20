@@ -1,6 +1,6 @@
 // Execute the native eligibility branches, name builder and Steam state machine.
 // Steam is replaced with a fake interface; no real scores or saves are touched.
-#include "community-leaderboards.hpp"
+#include "online-leaderboards.hpp"
 #include "verified-game.hpp"
 #include <array>
 #include <cstdlib>
@@ -42,6 +42,10 @@ static std::array<void*,6> gContext{};
 static void* gCallback=nullptr;
 static uint64_t gCallbackCall=0,gUsedBoard=0;
 static int gFinds=0,gCreates=0,gUploads=0,gDownloads=0;
+static int gExpectedType=0,gExpectedFirst=1,gExpectedLast=15;
+static std::array<void*,40> gFriendsVtable{};
+static void** gFriends=gFriendsVtable.data();
+static int gEntries=0,gNotified=0;
 static std::string gName;
 static uint64_t __fastcall Find(void*,void*,const char* name) {++gFinds;gName=name;return kFindCall;}
 static uint64_t __fastcall Create(void*,void*,const char*,int,int) {++gCreates;return 0;}
@@ -49,8 +53,15 @@ static uint64_t __fastcall Upload(void*,void*,uint64_t board,int method,int scor
   ++gUploads;gUsedBoard=board;Require(method==1&&score==123456&&!details&&!count,"Native score upload changed");return kUploadCall;
 }
 static uint64_t __fastcall Download(void*,void*,uint64_t board,int type,int first,int last) {
-  ++gDownloads;gUsedBoard=board;Require(type==0&&first==1&&last==15,"Native download range changed");return kDownloadCall;
+  ++gDownloads;gUsedBoard=board;Require(type==gExpectedType&&first==gExpectedFirst&&last==gExpectedLast,"Native download range changed");return kDownloadCall;
 }
+static bool __fastcall Entry(void*,void*,uint64_t,int index,void* entry,int32_t*,int) {
+  ++gEntries;At<uint64_t>(entry,0)=123;At<int>(entry,8)=index+1;At<int>(entry,12)=987654;return true;
+}
+static const char* __fastcall Name(void*,void*,uint64_t) {return "Test player";}
+static bool __fastcall UserInfo(void*,void*,uint64_t,bool) {return false;}
+static void __fastcall Notify(void*,void*,const std::string*) {++gNotified;}
+static void __fastcall ReleaseNotify(void*,void*,int) {}
 static void* __cdecl Context(void*) {return gContext.data();}
 static void __cdecl Register(void* callback,uint64_t call) {gCallback=callback;gCallbackCall=call;}
 static void __cdecl Unregister(void*,uint64_t) {}
@@ -66,29 +77,37 @@ struct Leaderboard {
     At<uint64_t>(result.data(),0)=found?kBoard:0;result[8]=static_cast<uint8_t>(found);
     reinterpret_cast<void (__thiscall*)(void*,void*,bool)>(gBase+0x42280)(bytes.data(),result.data(),ioFailure);
   }
-  void Queue(bool upload) {
+  void Queue(bool upload,int type=0) {
     if(upload) {
       auto* request=static_cast<uint8_t*>(std::calloc(1,0x2c));Require(request!=nullptr,"Allocation failed");
       At<int>(request,0x18)=123456;At<void*>(bytes.data(),0x58)=request;
     }else {
       auto* range=static_cast<int*>(std::calloc(3,sizeof(int)));Require(range!=nullptr,"Allocation failed");
-      range[1]=1;range[2]=15;At<void*>(bytes.data(),0x60)=range;
+      range[0]=type;range[1]=type==1?-7:1;range[2]=type==1?7:15;At<void*>(bytes.data(),0x60)=range;
     }
+  }
+  void Downloaded(int count,bool ioFailure=false,bool entriesHandle=true,bool original=false) {
+    alignas(8) std::array<uint8_t,24> result{};
+    At<uint64_t>(result.data(),0)=kBoard;At<uint64_t>(result.data(),8)=entriesHandle?0xabcdef0198765432ull:0;
+    At<int>(result.data(),16)=count;
+    const auto callback=original?static_cast<void*>(gBase+online_leaderboards::kNativeDownloadCallback):At<void*>(gCallback,0x1c);
+    Require(original||At<void*>(gCallback,0x18)==bytes.data(),"Download callback owner changed");
+    reinterpret_cast<void (__thiscall*)(void*,const void*,bool)>(callback)(bytes.data(),ioFailure?nullptr:result.data(),ioFailure);
   }
 };
 int wmain(int argc,wchar_t** argv) {
-  if(argc!=2){std::fprintf(stderr,"Usage: community-leaderboards-tests.exe game.exe\n");return 2;}
+  if(argc!=2){std::fprintf(stderr,"Usage: online-leaderboards-tests.exe game.exe\n");return 2;}
   SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,Fault);
   try {
     Require(VerifiedGame(argv[1]),"Unsupported executable hash");
     gBase=reinterpret_cast<uint8_t*>(LoadLibraryExW(argv[1],nullptr,DONT_RESOLVE_DLL_REFERENCES));Require(gBase!=nullptr,"Cannot map game");
-    community_leaderboards::Verify(gBase);
+    online_leaderboards::Verify(gBase);
     // Verify every patch before writing any part of the feature.
-    for(const auto site:{community_leaderboards::kViewGate,community_leaderboards::kPostGate,community_leaderboards::kTooltip}) {
+    for(const auto site:{online_leaderboards::kViewGate,online_leaderboards::kPostGate,online_leaderboards::kTooltip,online_leaderboards::kDownloadCallback,online_leaderboards::kDownloadCallback+1}) {
       const uint8_t original=gBase[site],wrong=0xcc;WriteMemory(gBase+site,&wrong,1);
-      bool rejected=false;try{community_leaderboards::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
+      bool rejected=false;try{online_leaderboards::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
       Require(rejected,"Unexpected instructions accepted");WriteMemory(gBase+site,&original,1);
-      community_leaderboards::Verify(gBase);
+      online_leaderboards::Verify(gBase);
     }
     std::array<uint8_t,0xa0> row{};gRows=row.data();
     Global<void*>(0x1d3d34)=row.data();Global<void*>(0x1d3d38)=row.data()+row.size();Global<int>(0x1d2c08)=0;
@@ -103,8 +122,8 @@ int wmain(int argc,wchar_t** argv) {
       Global<int>(0x1d2c34)=-1;Run(0x96366);
       Require(Global<int>(0x1d2c34)==(source==0?2:0),"Original post restriction differs");
     }
-    community_leaderboards::Install(gBase);
-    Require(std::strcmp(reinterpret_cast<char*>(gBase+community_leaderboards::kTooltip),community_leaderboards::kNewTooltip)==0,"Tooltip not updated");
+    online_leaderboards::Install(gBase);
+    Require(std::strcmp(reinterpret_cast<char*>(gBase+online_leaderboards::kTooltip),online_leaderboards::kNewTooltip)==0,"Tooltip not updated");
     for(int source:{0,1,2,3,255,256,-1})for(int custom:{0,1}) {
       At<int>(row.data(),0x9c)=source;const auto original=row;gCustom=custom;
       const bool supported=source>=0&&source<=2;
@@ -119,7 +138,8 @@ int wmain(int argc,wchar_t** argv) {
     JumpTo(gBase,0xd6d9c,reinterpret_cast<void*>(&std::malloc));JumpTo(gBase,0xd6dcf,reinterpret_cast<void*>(&std::free));
     JumpTo(gBase,0xe6280,reinterpret_cast<void*>(&std::memcpy));JumpTo(gBase,0xe5a70,reinterpret_cast<void*>(&std::memmove));JumpTo(gBase,0xe6060,reinterpret_cast<void*>(&std::memset));
     gVtable[22]=reinterpret_cast<void*>(&Create);gVtable[23]=reinterpret_cast<void*>(&Find);
-    gVtable[28]=reinterpret_cast<void*>(&Download);gVtable[31]=reinterpret_cast<void*>(&Upload);gContext[5]=&gStats;
+    gVtable[28]=reinterpret_cast<void*>(&Download);gVtable[30]=reinterpret_cast<void*>(&Entry);gVtable[31]=reinterpret_cast<void*>(&Upload);gContext[5]=&gStats;
+    gFriendsVtable[7]=reinterpret_cast<void*>(&Name);gFriendsVtable[37]=reinterpret_cast<void*>(&UserInfo);gContext[2]=&gFriends;
     const auto context=&Context;WriteMemory(gBase+0x15f400,&context,sizeof(context));
     const auto reg=&Register;WriteMemory(gBase+0x15f3f0,&reg,sizeof(reg));
     const auto unreg=&Unregister;WriteMemory(gBase+0x15f3f4,&unreg,sizeof(unreg));
@@ -151,6 +171,55 @@ int wmain(int argc,wchar_t** argv) {
     }
     At<std::string>(board.data(),0x2710).~basic_string();At<std::string>(board.data(),0x2728).~basic_string();
     std::puts("PASS: six native mode names; find-only lookup; existing/missing/IO-failed tables; native upload/download and 64-bit callbacks. No Steam connection or real score upload.");
+    std::array<void*,5> notifyVtable{};notifyVtable[2]=reinterpret_cast<void*>(&Notify);notifyVtable[4]=reinterpret_cast<void*>(&ReleaseNotify);
+    void** notify=notifyVtable.data();
+    {
+      Leaderboard request("original_unplayed_board");request.Queue(false,1);
+      gExpectedType=1;gExpectedFirst=-7;gExpectedLast=7;
+      request.Tick();request.Found(true);request.Tick();const int downloads=gDownloads;
+      request.Downloaded(0,false,true,true);request.Tick();
+      Require(gDownloads==downloads&&!At<void*>(request.bytes.data(),0x60),"Original viewer unexpectedly retried an empty around-player result");
+    }
+    for(int type:{0,1,2})for(int count:{0,1,15})for(bool ioFailure:{false,true})for(bool entriesHandle:{false,true}) {
+      if(count&&!entriesHandle)continue;
+      const int downloads=gDownloads,uploads=gUploads,creates=gCreates,notified=gNotified,entries=gEntries;
+      Leaderboard request("unplayed_board");request.Queue(false,type);
+      gExpectedType=type;gExpectedFirst=type==1?-7:1;gExpectedLast=type==1?7:15;
+      request.Tick();request.Found(true);request.Tick();
+      Require(gDownloads==downloads+1&&gCallbackCall==kDownloadCall,"Initial download did not start");
+      At<void*>(request.bytes.data(),0x8c)=&notify;
+      request.Downloaded(count,ioFailure,entriesHandle);
+      const bool fallback=type==1&&count==0&&!ioFailure;
+      if(fallback) {
+        Require(At<int>(request.bytes.data(),0x34)==0&&At<void*>(request.bytes.data(),0x60)&&gNotified==notified,"Fallback discarded pending UI request");
+        gExpectedType=0;gExpectedFirst=1;gExpectedLast=15;
+        request.Tick();Require(gDownloads==downloads+2&&gUsedBoard==kBoard,"Fallback did not request top 15 on the same board");
+        request.Downloaded(entriesHandle?15:0,false,entriesHandle);
+        Require(gEntries==entries+(entriesHandle?15:0),"Fallback did not decode native score rows");
+      }else Require(gEntries==entries+(!ioFailure?count:0),"Existing score results changed");
+      Require(At<int>(request.bytes.data(),0x34)==(!ioFailure?0:4),"Native completion/error state changed");
+      Require(!At<void*>(request.bytes.data(),0x60)&&gNotified==notified+1,"Native completion did not release request and notify UI once");
+      request.Tick();Require(gDownloads==downloads+1+fallback,"Empty/global/friends/error response retried indefinitely");
+      Require(gUploads==uploads&&gCreates==creates,"Viewing scores uploaded a score or created a table");
+    }
+    // A valid but completely empty global table also completes without retrying.
+    {
+      Leaderboard request("empty_board");request.Queue(false,1);
+      gExpectedType=1;gExpectedFirst=-7;gExpectedLast=7;
+      request.Tick();request.Found(true);request.Tick();request.Downloaded(0);
+      gExpectedType=0;gExpectedFirst=1;gExpectedLast=15;
+      request.Tick();const int downloads=gDownloads;request.Downloaded(0);request.Tick();
+      Require(gDownloads==downloads&&At<int>(request.bytes.data(),0x34)==0,"Empty table did not complete after one fallback");
+    }
+    {
+      Leaderboard request("failed_retry");request.Queue(false,1);
+      gExpectedType=1;gExpectedFirst=-7;gExpectedLast=7;
+      request.Tick();request.Found(true);request.Tick();request.Downloaded(0);
+      gExpectedType=0;gExpectedFirst=1;gExpectedLast=15;
+      request.Tick();const int downloads=gDownloads;request.Downloaded(0,true);request.Tick();
+      Require(gDownloads==downloads&&At<int>(request.bytes.data(),0x34)==4&&!At<void*>(request.bytes.data(),0x60),"Failed fallback did not preserve native error/cleanup");
+    }
+    std::puts("PASS: unranked-player fallback through registered native async callback; top-15 rows decoded; ranked/global/friends results, empty tables and IO failures; one UI completion; no uploads or table creation.");
     return 0;
   }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }

@@ -3,7 +3,7 @@
 #include "rehab-mode.hpp"
 #include "verified-game.hpp"
 #include "config.hpp"
-#include "community-leaderboards.hpp"
+#include "online-leaderboards.hpp"
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -130,7 +130,7 @@ int wmain(int argc,wchar_t** argv) {
     const bool enabled=argv[3][0]==L'1';
     if(enabled)rehab_mode::Install(gBase);
     Require((At<int>(rehab_mode::kFlag)!=0)==enabled&&rehab_mode::enabled==enabled,"Incorrect feature gating");
-    community_leaderboards::Install(gBase);
+    online_leaderboards::Install(gBase);
     JumpTo(gBase,0x86f00,reinterpret_cast<void*>(&Practice));JumpTo(gBase,0x1132f0,reinterpret_cast<void*>(&Sqrt));
     for(uint32_t rva:{0x4e510u,0x62495u,0x960dfu,0x8f17au,0x90e7eu,0x5d6f3u})Stop(rva);
     JumpTo(gBase,0x83c90,reinterpret_cast<void*>(&CaptureXmm));

@@ -49,7 +49,7 @@ cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\launch-
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\board-order-tests.exe native\board-order-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
-cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\community-leaderboards-tests.exe native\community-leaderboards-tests.cpp /link /DYNAMICBASE /NXCOMPAT
+cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\online-leaderboards-tests.exe native\online-leaderboards-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\rehab-mode-tests.exe native\rehab-mode-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
