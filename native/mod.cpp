@@ -18,6 +18,7 @@
 #include "launch-angle.hpp"
 #include "board-order.hpp"
 #include "community-leaderboards.hpp"
+#include "rehab-mode.hpp"
 #include <intrin.h>
 #include <fstream>
 
@@ -99,16 +100,16 @@ static BOOL WINAPI MenuVersion(const void* block,const wchar_t* subBlock,void** 
   using Query=BOOL (WINAPI*)(const void*,const wchar_t*,void**,UINT*);
   const auto result=reinterpret_cast<Query>(gGame+0xbd396)(block,subBlock,output,length);
   if(!result||!output||!*output||!length||!*length)return result;
-  static constexpr wchar_t suffix[]=L" / AEx " AEX_VERSION_WIDE;
+  const wchar_t* suffix=rehab_mode::enabled?L" / AEx " AEX_VERSION_WIDE L" / Rehab Mode":L" / AEx " AEX_VERSION_WIDE;
   static thread_local wchar_t version[128];
-  constexpr size_t suffixLength=sizeof(suffix)/sizeof(*suffix)-1;
+  const size_t suffixLength=wcslen(suffix);
   // This call site queries FileVersion. Keep the game's version and revision,
   // and return a separate buffer without changing the executable's metadata.
   if(*length>sizeof(version)/sizeof(*version)-suffixLength)return result;
   const auto* original=static_cast<const wchar_t*>(*output);
   if(original[*length-1]!=L'\0')return result;
   std::memcpy(version,original,(*length-1)*sizeof(wchar_t));
-  std::memcpy(version+*length-1,suffix,sizeof(suffix));
+  std::memcpy(version+*length-1,suffix,(suffixLength+1)*sizeof(wchar_t));
   *output=version;*length+=static_cast<UINT>(suffixLength);
   return result;
 }
@@ -186,6 +187,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     if(config.launchAngle)launch_angle::Verify(gGame);
     board_order::Verify(gGame);
     community_leaderboards::Verify(gGame);
+    if(config.rehabMode)rehab_mode::Verify(gGame);
     auto* audio=reinterpret_cast<uint8_t*>(GetModuleHandleW(L"Audiow32.dll"));
     wchar_t audioPath[MAX_PATH]={};
     const auto audioPathLength=audio?GetModuleFileNameW(reinterpret_cast<HMODULE>(audio),audioPath,MAX_PATH):0;
@@ -211,6 +213,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     laser_paddle::Install(gGame,config.holdClickFire);
     board_order::Install(gGame);
     community_leaderboards::Install(gGame);
+    if(config.rehabMode){rehab_mode::Install(gGame);Log("RehabMode enabled: unlimited paddles, number-key ball speeds, local/online scores disabled; saved sessions remain ineligible.");}
     if(config.launchAngle){launch_angle::Install(gGame);Log("LaunchAngle enabled: fresh balls start 6 pixels right of the paddle centre.");}
     if(config.holdClickFire)Log("HoldClickFire enabled: hold left-click to repeat laser fire.");
     if(fixMusic){music_volume::Install(gGame,audio);Log("Music volume precision fix installed.");}
