@@ -5,6 +5,8 @@ Anniversary Extra for DX-Ball 2: 20th Anniversary Edition
 1. [Download the latest version](https://github.com/Carlmundo/DXB2-AEx/releases/latest)
 2. Extract the .zip and place the contents in the game folder.
 
+You can also Subscribe to the [Steam Workshop item](https://steamcommunity.com/sharedfiles/filedetails/?id=3843035118), then open the "Install / Update AEx" board from the game menu.
+
 ### Proton / Wine users
 Windows users can ignore the next additional steps.
 1. In Steam, right click the game and click Properies.
