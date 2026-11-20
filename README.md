@@ -17,6 +17,7 @@ Windows users can ignore the next additional steps.
 - Disable the carpet rolling screen transition
 - Hold left-click to fire the laser paddle
 - Restore the original ball launch angle
+- Restored the Rehab Mode option from 1.3.2 (unlimited lives, adjustable ball speed with number keys, scores disabled)
 - Block dangerous code from community content
 - Stop a specific "cheat code" from being able to reset Steam achievements
 - Use online leaderboards for specific community content
