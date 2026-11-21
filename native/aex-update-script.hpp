@@ -3,9 +3,15 @@
 namespace aex_update {
 // Embedded in version.dll. Neither the URL nor any command text comes from Lua.
 inline constexpr wchar_t kUpdateScript[]=LR"AEX(
-param([string]$GamePath, [int]$GameId)
+param([string]$GamePath, [int]$GameId, [switch]$LogEnabled)
 $ErrorActionPreference = 'Stop'
 $dir = [IO.Path]::GetDirectoryName($GamePath)
+function Write-AexLog([string]$message) {
+    if ($LogEnabled) {
+        # Diagnostic failures must not interrupt installation or rollback.
+        try { Add-Content -LiteralPath (Join-Path $dir 'aex.log') -Value $message -Encoding UTF8 } catch {}
+    }
+}
 $stage = $null
 $stopped = $false
 $rollbackFailed = $false
@@ -70,7 +76,7 @@ try {
         Copy-Item -LiteralPath $file.Source -Destination $file.Destination -Force
     }
     # Do not reuse a numeric PID or enumerate/close any other game or editor.
-    Set-Content -LiteralPath (Join-Path $dir 'aex-update.log') -Value 'AEx installed; restarting game.'
+    Write-AexLog 'AEx installed; restarting game.'
     Start-Process -FilePath $GamePath -WorkingDirectory $dir
     $stopped = $false
 } catch {
@@ -94,7 +100,7 @@ try {
         try { Start-Process -FilePath $GamePath -WorkingDirectory $dir } catch { $failure += ' Restart failed: ' + $_.Exception.Message }
     }
     if ($rollbackFailed) { $failure += ' Rollback incomplete; backup retained in ' + $stage }
-    Set-Content -LiteralPath (Join-Path $dir 'aex-update.log') -Value $failure
+    Write-AexLog $failure
     throw $failure
 } finally {
     if ($running) { $running.Dispose() }

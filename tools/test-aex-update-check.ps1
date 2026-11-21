@@ -8,7 +8,7 @@ if (!$source) { throw 'Cannot find embedded checker.' }
 $checker = [scriptblock]::Create($source)
 $installerHeader = Get-Content -LiteralPath (Join-Path $project 'native\aex-update-script.hpp') -Raw
 $installer = [regex]::Match($installerHeader, '(?s)LR"AEX\((.*?)\)AEX"').Groups[1].Value
-$combined = "& {`n" + $source + "`n} -GamePath 'C:\Game''s\DXBall2.exe' -GameId 4242 -InstalledVersion '1.0.3' -SignalName 'Local\AEx-test' -InstallUpdate {`n" + $installer + "`n}"
+$combined = "& {`n" + $source + "`n} -GamePath 'C:\Game''s\DXBall2.exe' -GameId 4242 -InstalledVersion '1.0.3' -SignalName 'Local\AEx-test' -LogEnabled:`$true -InstallUpdate {`n" + $installer + "`n}"
 $tokens = $null
 $parseErrors = $null
 $null = [Management.Automation.Language.Parser]::ParseInput($combined, [ref]$tokens, [ref]$parseErrors)
@@ -44,8 +44,9 @@ function Get-Process {
     return $process
 }
 $install = {
-    param($GamePath, $GameId)
+    param($GamePath, $GameId, [switch]$LogEnabled)
     Check ($GamePath -eq $script:game -and $GameId -eq 4242) 'Installer target changed.'
+    Check ($LogEnabled.IsPresent -eq $script:loggingEnabled) 'Checker did not forward the logging setting.'
     Check ($script:ready.WaitOne(0) -and $script:yes.WaitOne(0)) 'Installer did not wait for the game Yes signal.'
     $script:installs++
 }
@@ -81,6 +82,7 @@ $cases = @(
     @('game-exited', '1.0.3', '1.0.4', 6, 0, 0),
     @('wrong-process', '1.0.3', '1.0.4', 6, 0, 0)
 )
+foreach ($loggingEnabled in @($false, $true)) {
 foreach ($case in $cases) {
     $script:scenario = $case[0]
     $script:json = @{ version = $case[2] } | ConvertTo-Json -Compress
@@ -100,13 +102,14 @@ foreach ($case in $cases) {
         if ($scenario -notin @('deferred-yes', 'deferred-no', 'exit-while-pending')) {
             if ($case[3] -eq 6) { $null = $yes.Set() } else { $null = $no.Set() }
         }
-        & $checker -GamePath $game -GameId 4242 -InstalledVersion $case[1] -SignalName $signalName -InstallUpdate $install
+        & $checker -GamePath $game -GameId 4242 -InstalledVersion $case[1] -SignalName $signalName -InstallUpdate $install -LogEnabled:$loggingEnabled
     Check ($requests -eq 1) "No metadata request for $scenario."
     Check ($ready.WaitOne(0) -eq [bool]$case[4]) "Wrong readiness signal for $scenario."
     Check ($installs -eq $case[5]) "Wrong install count for $scenario."
     if ($case[4]) { Check ($disposed -eq 1) 'Game process handle was not disposed.' }
     if ($scenario -in @('deferred-yes', 'deferred-no')) { Check ($refreshes -eq 3) 'Checker did not stay pending until the game decision.' }
     if ($scenario -eq 'exit-while-pending') { Check ($refreshes -eq 1) 'Checker did not stop when the game exited.' }
-    Write-Output "PASS: $scenario"
+    Write-Output "PASS: Log=$loggingEnabled / $scenario"
     } finally { $ready.Dispose(); $yes.Dispose(); $no.Dispose() }
+}
 }

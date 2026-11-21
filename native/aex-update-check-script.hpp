@@ -2,7 +2,7 @@
 
 namespace aex_update {
 inline constexpr wchar_t kUpdateCheckScript[]=LR"AEXCHECK(
-param([string]$GamePath, [int]$GameId, [string]$InstalledVersion, [string]$SignalName, [scriptblock]$InstallUpdate)
+param([string]$GamePath, [int]$GameId, [string]$InstalledVersion, [string]$SignalName, [scriptblock]$InstallUpdate, [switch]$LogEnabled)
 $ErrorActionPreference = 'Stop'
 function Read-AexVersion($value) {
     if ($value -isnot [string] -or $value -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
@@ -58,13 +58,13 @@ try {
     $null = $ready.Set()
     while (!$running.HasExited) {
         $decision = [Threading.WaitHandle]::WaitAny(@($install, $cancel), 250)
-        if ($decision -eq 0) { & $InstallUpdate -GamePath $GamePath -GameId $GameId; return }
+        if ($decision -eq 0) { & $InstallUpdate -GamePath $GamePath -GameId $GameId -LogEnabled:$LogEnabled; return }
         if ($decision -eq 1) { return }
         $running.Refresh()
     }
 } catch {
     # A metadata/network failure must not interrupt game startup. The shared
-    # installer records its own errors in aex-update.log if installation began.
+    # installer records its own errors in aex.log when logging is enabled.
 } finally {
     foreach ($signal in @($ready, $install, $cancel)) { if ($signal) { $signal.Dispose() } }
     if ($running) { $running.Dispose() }

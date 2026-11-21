@@ -13,6 +13,7 @@ inline uint8_t* gBase=nullptr;
 inline HANDLE gUpdater=nullptr;
 inline SRWLOCK gLock=SRWLOCK_INIT;
 inline bool gCheckForUpdates=false;
+inline bool gLoggingEnabled=false;
 inline LONG gCheckStarted=0;
 inline decltype(&CreateProcessW) gCreateProcess=&CreateProcessW;
 inline HANDLE gReady=nullptr,gInstall=nullptr,gCancel=nullptr;
@@ -54,13 +55,14 @@ inline std::wstring EncodeCommand(const std::wstring& script) {
   return encoded;
 }
 inline std::wstring BuildScript(const std::wstring& executable,DWORD process,bool check=false) {
+  const std::wstring logging=gLoggingEnabled?L" -LogEnabled:$true":L" -LogEnabled:$false";
   if(check) {
     return std::wstring(L"& {\n")+kUpdateCheckScript+L"\n} -GamePath "+QuotePowerShell(executable)+
       L" -GameId "+std::to_wstring(process)+L" -InstalledVersion "+QuotePowerShell(AEX_VERSION_WIDE)+
-      L" -SignalName "+QuotePowerShell(gSignalName)+
+      L" -SignalName "+QuotePowerShell(gSignalName)+logging+
       L" -InstallUpdate {\n"+kUpdateScript+L"\n}";
   }
-  return std::wstring(L"& {\n")+kUpdateScript+L"\n} -GamePath "+QuotePowerShell(executable)+L" -GameId "+std::to_wstring(process);
+  return std::wstring(L"& {\n")+kUpdateScript+L"\n} -GamePath "+QuotePowerShell(executable)+L" -GameId "+std::to_wstring(process)+logging;
 }
 inline bool LaunchUpdate(bool check=false) noexcept {
   AcquireSRWLockExclusive(&gLock);

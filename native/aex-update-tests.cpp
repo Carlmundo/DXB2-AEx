@@ -117,6 +117,15 @@ int wmain(int argc,wchar_t** argv) {
   if(argc!=2){std::fprintf(stderr,"Usage: aex-update-tests.exe game.exe\n");return 2;}
   SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
   try {
+    for(const bool logging:{false,true}) {
+      aex_update::gLoggingEnabled=logging;
+      for(const bool check:{false,true}) {
+        const auto script=aex_update::BuildScript(L"C:\\Game\\DXBall2.exe",4242,check);
+        Require(script.find(logging?L" -LogEnabled:$true":L" -LogEnabled:$false")!=std::wstring::npos,
+          "Updater did not receive the configured logging setting");
+      }
+    }
+    aex_update::gLoggingEnabled=false;
     Require(VerifiedGame(argv[1]),"Unsupported executable hash");
     auto* base=reinterpret_cast<uint8_t*>(LoadLibraryExW(argv[1],nullptr,DONT_RESOLVE_DLL_REFERENCES));
     Require(base!=nullptr,"Cannot map game");KernelImports(base);

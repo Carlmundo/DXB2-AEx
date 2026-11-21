@@ -48,10 +48,15 @@ function Copy-Item {
     Microsoft.PowerShell.Management\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force
 }
 try {
+    foreach ($logging in @('off-new', 'off-existing', 'on-new', 'on-existing', 'on-unwritable')) {
+    $logEnabled = $logging.StartsWith('on-')
     foreach ($mode in @('success', 'exited', 'download-failure', 'invalid-zip', 'traversal', 'missing-dll', 'wrong-process', 'copy-failure', 'restart-failure', 'locked-editor')) {
         $script:mode = $mode
-        $script:caseDir = Join-Path $fixtureRoot ($mode + " Game's & % !")
+        $script:caseDir = Join-Path $fixtureRoot ($logging + '-' + $mode + " Game's & % !")
         $null = New-Item -ItemType Directory -Path $caseDir
+        $log = Join-Path $caseDir 'aex.log'
+        if ($logging.EndsWith('-existing')) { Set-Content -LiteralPath $log -Value 'Existing game log.' -Encoding UTF8 }
+        if ($logging -eq 'on-unwritable') { $null = New-Item -ItemType Directory -Path $log }
         $script:game = Join-Path $caseDir 'DXBall2.exe'
         Set-Content -LiteralPath $game -Value 'fixture only; never executed'
         Set-Content -LiteralPath (Join-Path $caseDir 'aex.cfg') -Value 'old-config' -NoNewline
@@ -84,7 +89,7 @@ try {
             $locked = [IO.File]::Open($editor, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         }
         $failed = $false
-        try { & $update -GamePath $game -GameId 4242 } catch { $failed = $true }
+        try { & $update -GamePath $game -GameId 4242 -LogEnabled:$logEnabled } catch { $failed = $true; $updateFailure = $_.Exception.Message }
         finally { if ($locked) { $locked.Dispose() } }
         $success = $mode -in @('success', 'exited')
         Check ($failed -ne $success) "Unexpected outcome for $mode."
@@ -100,7 +105,6 @@ try {
         } else {
             Check ((Get-Content -LiteralPath (Join-Path $caseDir 'version.dll') -Raw) -eq 'old-dll') "DLL was damaged in $mode."
             Check ((Get-Content -LiteralPath (Join-Path $caseDir 'aex.cfg') -Raw) -eq 'old-config') "Config was damaged in $mode."
-            Check (Test-Path -LiteralPath (Join-Path $caseDir 'aex-update.log')) 'Failure was not logged.'
             if ($mode -in @('copy-failure', 'restart-failure', 'locked-editor')) {
                 Check ($events.Contains('stop') -and $events.Contains('start')) 'Stopped game not recovered after failure.'
                 if ($mode -eq 'locked-editor') {
@@ -112,9 +116,21 @@ try {
                 Check (!$events.Contains('stop') -and !$events.Contains('start')) 'Pre-install failure stopped or restarted the game.'
             }
         }
+        Check (!(Test-Path -LiteralPath (Join-Path $caseDir 'aex-update.log'))) 'Legacy update log was created.'
+        if ($logging -eq 'on-unwritable') {
+            Check (Test-Path -LiteralPath $log -PathType Container) 'Unwritable log was changed.'
+        } elseif ($logEnabled) {
+            $messages = @(Get-Content -LiteralPath $log)
+            if ($logging.EndsWith('-existing')) { Check ($messages[0] -eq 'Existing game log.') 'Existing log was overwritten.' }
+            if ($success) { Check ($messages[-1] -eq 'AEx installed; restarting game.') 'Success was not logged.' }
+            else { Check ($messages[-1] -eq $updateFailure) "Failure was not logged for $mode." }
+        } elseif ($logging.EndsWith('-existing')) {
+            Check (@(Get-Content -LiteralPath $log).Count -eq 1 -and (Get-Content -LiteralPath $log) -eq 'Existing game log.') 'Disabled logging modified the existing log.'
+        } else { Check (!(Test-Path -LiteralPath $log)) 'Disabled logging created a log.' }
         Check (!(Test-Path -LiteralPath (Join-Path $caseDir 'escaped.txt'))) 'ZIP path traversal escaped staging.'
         Check (@(Get-ChildItem -LiteralPath $caseDir -Directory -Force | Where-Object Name -Like '.aex-update-*').Count -eq 0) 'Staging directory not cleaned.'
-        Write-Output "PASS: $mode"
+        Write-Output "PASS: $logging / $mode"
+    }
     }
 } finally {
     $resolved = [IO.Path]::GetFullPath($fixtureRoot)
