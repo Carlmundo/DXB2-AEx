@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <new>
 #include <string>
+#include <vector>
 
 static uint8_t* gBase=nullptr;
 static void* gEntry=nullptr;
@@ -16,7 +17,7 @@ template<class T> static T& Global(size_t offset) {return At<T>(gBase,offset);}
 static void Require(bool ok,const char* message) {if(!ok)throw std::runtime_error(message);}
 static LONG CALLBACK Fault(EXCEPTION_POINTERS* fault) {
   if(fault->ExceptionRecord->ExceptionCode!=EXCEPTION_ACCESS_VIOLATION)return EXCEPTION_CONTINUE_SEARCH;
-  std::fprintf(stderr,"Leaderboard test fault at RVA %08X\n",static_cast<uint32_t>(reinterpret_cast<uintptr_t>(fault->ExceptionRecord->ExceptionAddress)-reinterpret_cast<uintptr_t>(gBase)));
+  std::fprintf(stderr,"Leaderboard test fault at RVA %08X (EAX %08X ECX %08X EDX %08X ESI %08X)\n",static_cast<uint32_t>(reinterpret_cast<uintptr_t>(fault->ExceptionRecord->ExceptionAddress)-reinterpret_cast<uintptr_t>(gBase)),fault->ContextRecord->Eax,fault->ContextRecord->Ecx,fault->ContextRecord->Edx,fault->ContextRecord->Esi);
   TerminateProcess(GetCurrentProcess(),3);return EXCEPTION_CONTINUE_SEARCH;
 }
 static __declspec(naked) int Gate() {
@@ -65,6 +66,44 @@ static void __fastcall ReleaseNotify(void*,void*,int) {}
 static void* __cdecl Context(void*) {return gContext.data();}
 static void __cdecl Register(void* callback,uint64_t call) {gCallback=callback;gCallbackCall=call;}
 static void __cdecl Unregister(void*,uint64_t) {}
+static void* gViewLeaderboard=nullptr;
+static std::string gViewName="community_A29088_HC";
+static void* __cdecl ViewName(void* output) {return new(output)std::string(gViewName);}
+static void* __fastcall ViewLeaderboard(void*,void*,const std::string* name) {
+  Require(*name==gViewName,"Tab changed selected boardset/mode identity");return gViewLeaderboard;
+}
+struct TitleDraw {std::string text;int x,y,width;};
+static std::vector<TitleDraw> gTitles;
+static void __fastcall Title(void*,void*,const char* text,int x,int y,int width) {gTitles.push_back({text,x,y,width});}
+static void* gTitleSite=nullptr;
+static void* gCharacterSite=nullptr;
+static __declspec(naked) int __stdcall InvokeCharacter(unsigned) {
+  __asm {
+    push ebp
+    sub esp,20
+    mov ebp,esp
+    mov eax,dword ptr [ebp+28]
+    mov dword ptr [ebp+16],eax
+    jmp dword ptr [gCharacterSite]
+  }
+}
+static __declspec(naked) void __stdcall InvokeTitle(void*,const char*,int,int,int) {
+  __asm {
+    push ebp
+    mov ebp,esp
+    push offset finished
+    push dword ptr [ebp+24]
+    push dword ptr [ebp+20]
+    push dword ptr [ebp+16]
+    push dword ptr [ebp+12]
+    mov ecx,dword ptr [ebp+8]
+    jmp dword ptr [gTitleSite]
+  finished:
+    mov esp,ebp
+    pop ebp
+    ret 20
+  }
+}
 struct Leaderboard {
   alignas(8) std::array<uint8_t,0xf0> bytes{};
   explicit Leaderboard(const std::string& name) {
@@ -103,7 +142,9 @@ int wmain(int argc,wchar_t** argv) {
     gBase=reinterpret_cast<uint8_t*>(LoadLibraryExW(argv[1],nullptr,DONT_RESOLVE_DLL_REFERENCES));Require(gBase!=nullptr,"Cannot map game");
     online_leaderboards::Verify(gBase);
     // Verify every patch before writing any part of the feature.
-    for(const auto site:{online_leaderboards::kViewGate,online_leaderboards::kPostGate,online_leaderboards::kTooltip,online_leaderboards::kDownloadCallback,online_leaderboards::kDownloadCallback+1}) {
+    for(const auto site:{online_leaderboards::kViewGate,online_leaderboards::kPostGate,online_leaderboards::kTooltip,online_leaderboards::kDownloadCallback,online_leaderboards::kDownloadCallback+1,
+                        online_leaderboards::kReadState,online_leaderboards::kReadState+1,online_leaderboards::kTitleCall,online_leaderboards::kTitleCall+1,
+                        online_leaderboards::kCharacter,online_leaderboards::kCharacter+5}) {
       const uint8_t original=gBase[site],wrong=0xcc;WriteMemory(gBase+site,&wrong,1);
       bool rejected=false;try{online_leaderboards::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
       Require(rejected,"Unexpected instructions accepted");WriteMemory(gBase+site,&original,1);
@@ -220,6 +261,109 @@ int wmain(int argc,wchar_t** argv) {
       Require(gDownloads==downloads&&At<int>(request.bytes.data(),0x34)==4&&!At<void*>(request.bytes.data(),0x60),"Failed fallback did not preserve native error/cleanup");
     }
     std::puts("PASS: unranked-player fallback through registered native async callback; top-15 rows decoded; ranked/global/friends results, empty tables and IO failures; one UI completion; no uploads or table creation.");
+    // Execute the installed state-read call and the game's real queueing method.
+    // This also covers changing filters while a previous request is pending.
+    // Return without touching EAX so the hook's native state result is visible.
+    WriteMemory(gBase+online_leaderboards::kReadState+5,&done,1);
+    JumpTo(gBase,0x9d360,reinterpret_cast<void*>(&ViewName));
+    JumpTo(gBase,0x404c0,reinterpret_cast<void*>(&ViewLeaderboard));
+    std::array<void*,23> managerVtable{};managerVtable[22]=gBase+0x40ab0;
+    std::array<uint8_t,0x38> manager{};At<void*>(manager.data(),0)=managerVtable.data();At<uint8_t>(manager.data(),0x34)=1;
+    Global<void*>(online_leaderboards::kManager)=manager.data();
+    gCharacterSite=gBase+online_leaderboards::kCharacter;
+    uint8_t characterReturn[]={0x8b,0xe5,0x83,0xc4,20,0x5d,0xb8,0,0,0,0,0xc2,4,0};
+    WriteMemory(online_leaderboards::characterResume,characterReturn,sizeof(characterReturn));
+    characterReturn[7]=1;WriteMemory(online_leaderboards::characterDone,characterReturn,sizeof(characterReturn));
+    for(int scene:{2,4,5,6})for(int state:{0,1,7})for(unsigned key:{9u,static_cast<unsigned>('F'),static_cast<unsigned>('f'),static_cast<unsigned>('x')}) {
+      Global<int>(0x1a7074)=scene;Global<int>(online_leaderboards::kState)=state;
+      Global<uint8_t>(online_leaderboards::kKey)='?';Global<int>(0x1b93b8)=1;online_leaderboards::tabPending=false;
+      const bool capture=scene==5&&state==7&&key==9;
+      Require(InvokeCharacter(key)==static_cast<int>(capture)&&online_leaderboards::tabPending==capture,"Tab captured outside online scores or F handling changed");
+      Require(Global<uint8_t>(online_leaderboards::kKey)==(capture?'?':key)&&Global<int>(0x1b93b8)==1,"Character hook changed key replay or consumed menu activation");
+    }
+    Global<int>(0x1a7074)=5;online_leaderboards::tabPending=false;
+    const int uploads=gUploads,creates=gCreates;
+    using View=online_leaderboards::View;
+    using Rank=online_leaderboards::PersonalRank;
+    for(bool ranked:{false,true})for(bool earlyTab:{false,true})for(const char* mode:{"","C","HA","HC","KA","KC"}) {
+      gViewName=std::string("community_A29088")+(*mode?"_":"")+mode;
+      Leaderboard request(gViewName);gViewLeaderboard=request.bytes.data();
+      Global<int>(online_leaderboards::kState)=0;Global<uint8_t>(online_leaderboards::kKey)='F';
+      Require(Run(online_leaderboards::kReadState)==0&&online_leaderboards::view==View::AroundUser&&Global<uint8_t>(online_leaderboards::kKey)=='F',"F affected local scores");
+      request.Queue(false,1);Global<int>(online_leaderboards::kState)=7;Run(online_leaderboards::kReadState);
+      Require(online_leaderboards::viewing==request.bytes.data()&&online_leaderboards::personalRank==Rank::Unknown,"Viewer did not bind the selected table with unknown rank");
+      if(earlyTab) {
+        auto* range=At<void*>(request.bytes.data(),0x60);InvokeCharacter(9);Run(online_leaderboards::kReadState);
+        Require(online_leaderboards::tabPending&&online_leaderboards::view==View::AroundUser&&At<void*>(request.bytes.data(),0x60)==range,"Early Tab cancelled personal-rank detection");
+      }
+      // A different table's late callback must not change the current viewer.
+      {
+        Leaderboard other("other_board");other.Queue(false,1);
+        gExpectedType=1;gExpectedFirst=-7;gExpectedLast=7;
+        other.Tick();other.Found(true);other.Tick();other.Downloaded(0);
+        Require(online_leaderboards::personalRank==Rank::Unknown&&online_leaderboards::view==View::AroundUser,"Other table changed viewer rank/view");
+      }
+      gExpectedType=1;gExpectedFirst=-7;gExpectedLast=7;
+      request.Tick();request.Found(true);request.Tick();request.Downloaded(ranked?15:0);
+      Require(online_leaderboards::personalRank==(ranked?Rank::Present:Rank::Absent)&&online_leaderboards::view==(ranked?View::AroundUser:View::Top),"Initial result selected the wrong view or rank availability");
+      if(!ranked) {
+        gExpectedType=0;gExpectedFirst=1;gExpectedLast=15;request.Tick();
+        if(!earlyTab)request.Downloaded(15);
+      }
+      if(earlyTab) {
+        Run(online_leaderboards::kReadState);
+        Require(online_leaderboards::view==View::Friends&&!online_leaderboards::tabPending,"Deferred Tab did not enable friends after rank detection");
+        gExpectedType=2;gExpectedFirst=1;gExpectedLast=15;request.Tick();request.Downloaded(0);
+      }
+      InvokeCharacter('F');Run(online_leaderboards::kReadState);
+      Require(online_leaderboards::view==(earlyTab?View::Friends:(ranked?View::AroundUser:View::Top))&&Global<uint8_t>(online_leaderboards::kKey)=='F',"F changed view or was consumed");
+      const View rankedCycle[]={earlyTab?View::Top:View::Friends,earlyTab?View::AroundUser:View::Top,earlyTab?View::Friends:View::AroundUser};
+      const View unrankedCycle[]={earlyTab?View::Top:View::Friends,earlyTab?View::Friends:View::Top};
+      for(int step=0;step<6;++step) {
+        const View expected=ranked?rankedCycle[step%3]:unrankedCycle[step%2];
+        InvokeCharacter(9);Require(Run(online_leaderboards::kReadState)==7,"Tab left online scores");
+        Require(online_leaderboards::view==expected&&!online_leaderboards::tabPending,"Tab cycle included the wrong view");
+        auto* range=At<int*>(request.bytes.data(),0x60);
+        gExpectedType=expected==View::AroundUser?1:(expected==View::Friends?2:0);
+        gExpectedFirst=expected==View::AroundUser?-7:1;gExpectedLast=expected==View::AroundUser?7:15;
+        Require(range&&range[0]==gExpectedType&&range[1]==gExpectedFirst&&range[2]==gExpectedLast,"View queued the wrong native request/range");
+        request.Tick();const int downloads=gDownloads,entries=gEntries;
+        Run(online_leaderboards::kReadState);request.Tick();Require(gDownloads==downloads,"One Tab advanced the cycle twice");
+        const int count=expected==View::AroundUser?15:(expected==View::Friends&&step%2==0?30:0);
+        request.Downloaded(count);
+        Require(gEntries==entries+(count?15:0),"Result violated native 15-row limit");
+        Require(online_leaderboards::personalRank==(ranked?Rank::Present:Rank::Absent)&&online_leaderboards::view==expected,"Empty friends/top response changed rank availability or view");
+      }
+      Global<int>(online_leaderboards::kState)=0;Run(online_leaderboards::kReadState);
+      Require(online_leaderboards::view==View::AroundUser&&online_leaderboards::personalRank==Rank::Unknown&&!online_leaderboards::viewing,"Leaving viewer retained view/rank availability");
+      Global<int>(online_leaderboards::kState)=7;Run(online_leaderboards::kReadState);
+      Require(online_leaderboards::view==View::AroundUser&&online_leaderboards::personalRank==Rank::Unknown,"New board/mode inherited a previous rank restriction");
+    }
+    // IO failure does not prove the player has no score; a callback after
+    // closing the viewer must not carry a restriction into the next session.
+    for(bool ioFailure:{false,true}) {
+      Leaderboard request(gViewName);gViewLeaderboard=request.bytes.data();request.Queue(false,1);
+      Global<int>(online_leaderboards::kState)=0;Run(online_leaderboards::kReadState);
+      Global<int>(online_leaderboards::kState)=7;Run(online_leaderboards::kReadState);
+      gExpectedType=1;gExpectedFirst=-7;gExpectedLast=7;request.Tick();request.Found(true);request.Tick();
+      if(!ioFailure){Global<int>(online_leaderboards::kState)=0;Run(online_leaderboards::kReadState);}
+      request.Downloaded(0,ioFailure);
+      Require(online_leaderboards::personalRank==Rank::Unknown&&online_leaderboards::view==View::AroundUser,"IO-failed or closed-view callback imposed an unranked restriction");
+    }
+    Require(gUploads==uploads&&gCreates==creates,"Tab uploaded a score or created a leaderboard");
+    JumpTo(gBase,online_leaderboards::kNativeTitle,reinterpret_cast<void*>(&Title));
+    WriteMemory(gBase+online_leaderboards::kTitleCall+5,&done,1);
+    gTitleSite=gBase+online_leaderboards::kTitleCall;
+    std::array<uint8_t,0x24> font{};At<int>(font.data(),0x20)=20;
+    for(View view:{View::AroundUser,View::Friends,View::Top})for(const char* mode:{"Normal","Classic","Hard","Hard Classic","Kid","Kid Classic"}) {
+      online_leaderboards::view=view;gTitles.clear();const std::string title=std::string("Online Scores - ")+mode;
+      InvokeTitle(font.data(),title.c_str(),0,200,1024);
+      Require(gTitles.size()==(view==View::AroundUser?2u:3u)&&gTitles[0].text==title&&gTitles[0].y==200,"Native title changed or default subtitle was not blank");
+      if(view!=View::AroundUser)Require(gTitles[1].text==(view==View::Friends?"Friends":"Top 15")&&gTitles[1].x==0&&gTitles[1].y==227&&gTitles[1].width==1024,"View subtitle text/placement differs");
+      const auto& hint=gTitles.back();
+      Require(hint.text=="Press Tab to change view"&&hint.x==0&&hint.y==590&&hint.width==1024,"Online view hint text/centering/placement differs");
+    }
+    std::puts("PASS: native Tab dispatch; ranked default/Friends/Top cycle; unranked Top/Friends cycle; early Tab during rank lookup; other-table/closed-view/IO-failed callbacks; per-view reset; all six mode names; blank/Friends/Top 15 subtitles; 15-row cap; no uploads or table creation.");
     return 0;
   }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }
