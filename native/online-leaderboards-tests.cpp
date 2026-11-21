@@ -355,14 +355,23 @@ int wmain(int argc,wchar_t** argv) {
     WriteMemory(gBase+online_leaderboards::kTitleCall+5,&done,1);
     gTitleSite=gBase+online_leaderboards::kTitleCall;
     std::array<uint8_t,0x24> font{};At<int>(font.data(),0x20)=20;
-    for(View view:{View::AroundUser,View::Friends,View::Top})for(const char* mode:{"Normal","Classic","Hard","Hard Classic","Kid","Kid Classic"}) {
+    for(int lookup:{0,1,2,3}) {
+      Leaderboard table("hint_lookup");online_leaderboards::viewing=table.bytes.data();table.Tick();
+      if(lookup!=3)table.Found(lookup==1,lookup==2);
+      const bool found=lookup==1;
+      for(View view:{View::AroundUser,View::Friends,View::Top})for(const char* mode:{"Normal","Classic","Hard","Hard Classic","Kid","Kid Classic"}) {
       online_leaderboards::view=view;gTitles.clear();const std::string title=std::string("Online Scores - ")+mode;
       InvokeTitle(font.data(),title.c_str(),0,200,1024);
-      Require(gTitles.size()==(view==View::AroundUser?2u:3u)&&gTitles[0].text==title&&gTitles[0].y==200,"Native title changed or default subtitle was not blank");
+      Require(gTitles.size()==(view==View::AroundUser?1u:2u)+(found?1u:0u)&&gTitles[0].text==title&&gTitles[0].y==200,"Native title changed or lookup showed an unavailable view hint");
       if(view!=View::AroundUser)Require(gTitles[1].text==(view==View::Friends?"Friends":"Top 15")&&gTitles[1].x==0&&gTitles[1].y==227&&gTitles[1].width==1024,"View subtitle text/placement differs");
-      const auto& hint=gTitles.back();
-      Require(hint.text=="Press Tab to change view"&&hint.x==0&&hint.y==590&&hint.width==1024,"Online view hint text/centering/placement differs");
+      if(found) {
+        const auto& hint=gTitles.back();
+        Require(hint.text=="Press Tab to change view"&&hint.x==0&&hint.y==590&&hint.width==1024,"Online view hint text/centering/placement differs");
+      }
+      }
     }
+    online_leaderboards::viewing=nullptr;
+    std::puts("PASS: view hint shown only for a found leaderboard; hidden for missing, IO-failed and pending lookups across all modes/views.");
     std::puts("PASS: native Tab dispatch; ranked default/Friends/Top cycle; unranked Top/Friends cycle; early Tab during rank lookup; other-table/closed-view/IO-failed callbacks; per-view reset; all six mode names; blank/Friends/Top 15 subtitles; 15-row cap; no uploads or table creation.");
     return 0;
   }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\n",error.what());return 1;}

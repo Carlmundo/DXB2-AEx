@@ -88,7 +88,9 @@ inline void __fastcall DrawTitle(uint8_t* font,void*,const char* title,int x,int
   const char* label=view==View::Friends?"Friends":(view==View::Top?"Top 15":nullptr);
   if(label)draw(font,label,x,y+*reinterpret_cast<int*>(font+0x20)+7,width);
   // Below all 15 score rows, above the existing menu-button tooltip.
-  draw(font,"Press Tab to change view",x,590,width);
+  // The native find callback leaves the 64-bit handle zero if no table exists.
+  if(viewing&&*reinterpret_cast<const uint64_t*>(viewing+0x20))
+    draw(font,"Press Tab to change view",x,590,width);
 }
 inline int __cdecl LookupSource() noexcept {
   // Project only this eligibility check. The selector's actual source, paths,
