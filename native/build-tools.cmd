@@ -7,11 +7,13 @@ if errorlevel 1 exit /b %errorlevel%
 if not exist build\Tools mkdir build\Tools
 set "STEAM_DLL=%~1"
 if not defined STEAM_DLL set "STEAM_DLL=.scratch\game\steam_api.dll"
-node tools\editor-exports.mjs "%STEAM_DLL%"
+node tools\steam-exports.mjs "%STEAM_DLL%"
 if errorlevel 1 exit /b %errorlevel%
-cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /LD /I .scratch /Fo:build\ /Fe:build\Tools\steam_api.dll native\editor-mod.cpp user32.lib /link /DEF:.scratch\editor-steam.def /DYNAMICBASE /NXCOMPAT
+cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /LD /I .scratch /Fo:build\ /Fe:build\Tools\steam_api.dll native\tools-steam-proxy.cpp user32.lib /link /DEF:.scratch\tools-steam.def /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
-cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /Fo:build\ /Fe:build\editor-proxy-tests.exe native\editor-proxy-tests.cpp /link /DYNAMICBASE /NXCOMPAT
+cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /Fo:build\ /Fe:build\tools-steam-proxy-tests.exe native\tools-steam-proxy-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /Fo:build\ /Fe:build\editor-script-tests.exe native\editor-script-tests.cpp user32.lib gdi32.lib /link /DYNAMICBASE /NXCOMPAT
+if errorlevel 1 exit /b %errorlevel%
+cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /Fo:build\ /Fe:build\workshop-description-tests.exe native\workshop-description-tests.cpp user32.lib /link /DYNAMICBASE /NXCOMPAT
 exit /b %errorlevel%

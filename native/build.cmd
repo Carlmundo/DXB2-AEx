@@ -57,5 +57,5 @@ cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\rehab-s
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /LD /I .scratch /Fo:build\ /Fe:build\version.dll native\mod.cpp /link /DEF:native\version.def /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
-call native\build-editor.cmd
+call native\build-tools.cmd
 exit /b %errorlevel%

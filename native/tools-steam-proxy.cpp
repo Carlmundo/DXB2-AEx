@@ -1,5 +1,6 @@
 #include "editor-scripts.hpp"
-#include "editor-steam.h"
+#include "workshop-description.hpp"
+#include "tools-steam.h"
 
 BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
   if(reason!=DLL_PROCESS_ATTACH)return TRUE;
@@ -17,10 +18,16 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     gSteam[i]=GetProcAddress(steam,kSteamNames[i]?kSteamNames[i]:MAKEINTRESOURCEA(kSteamOrdinals[i]));
     if(!gSteam[i])return FALSE;
   }
-  if(!GetModuleFileNameW(nullptr,path,MAX_PATH)||!editor_scripts::VerifiedExecutable(path))return TRUE;
+  if(!GetModuleFileNameW(nullptr,path,MAX_PATH))return TRUE;
   try {
-    editor_scripts::Install(reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)));
-    OutputDebugStringA("DX-Ball 2 AEx: editor 1 MiB script buffer, comment formatting fix and bundled-board editing installed.\n");
+    auto* image=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
+    if(editor_scripts::VerifiedExecutable(path)) {
+      editor_scripts::Install(image);
+      OutputDebugStringA("DX-Ball 2 AEx: editor 1 MiB script buffer, comment formatting fix and bundled-board editing installed.\n");
+    }else if(workshop_description::VerifiedExecutable(path)) {
+      workshop_description::Install(image);
+      OutputDebugStringA("DX-Ball 2 AEx: Workshop 8000-byte description buffer installed.\n");
+    }
   }catch(const std::exception& error){OutputDebugStringA(error.what());}
   return TRUE;
 }

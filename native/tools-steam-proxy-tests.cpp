@@ -6,9 +6,9 @@
 
 static void Require(bool ok,const char* message){if(!ok)throw std::runtime_error(message);}
 int wmain(int argc,wchar_t** argv) {
-  if(argc!=3){std::fprintf(stderr,"Usage: editor-proxy-tests.exe Tools/steam_api.dll original-steam_api.dll\n");return 2;}
+  if(argc!=3){std::fprintf(stderr,"Usage: tools-steam-proxy-tests.exe Tools/steam_api.dll original-steam_api.dll\n");return 2;}
   try {
-    const auto proxy=LoadLibraryW(argv[1]);Require(proxy!=nullptr,"Cannot load editor proxy");
+    const auto proxy=LoadLibraryW(argv[1]);Require(proxy!=nullptr,"Cannot load Tools Steam proxy");
     const auto steam=LoadLibraryW(argv[2]);Require(steam!=nullptr&&steam!=proxy,"Proxy did not load distinct original Steam DLL");
     const auto* bytes=reinterpret_cast<const unsigned char*>(steam);
     const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS*>(bytes+reinterpret_cast<const IMAGE_DOS_HEADER*>(bytes)->e_lfanew);

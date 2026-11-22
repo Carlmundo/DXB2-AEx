@@ -6,14 +6,14 @@
 #include <richole.h>
 #include <commctrl.h>
 #include <tom.h>
-#include <bcrypt.h>
+#include "executable-hash.hpp"
+#include "memory-patch.hpp"
 #include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#pragma comment(lib,"bcrypt.lib")
 #pragma comment(lib,"comctl32.lib")
 #pragma comment(lib,"gdi32.lib")
 
@@ -35,32 +35,10 @@ inline bool VerifiedExecutable(const wchar_t* path) noexcept {
     {0x53,0xce,0x81,0x49,0x38,0x9b,0xe5,0xef,0x31,0x87,0xa4,0xe2,0xc8,0x81,0xaf,0x81,0x6e,0x72,0x03,0xa5,0xd8,0x2b,0xb6,0x61,0x4f,0x02,0xc2,0xd4,0x5e,0xb9,0x88,0x0e},
     {0x3c,0x2d,0x51,0x1e,0x72,0xcd,0x51,0xe8,0x9a,0x9d,0x75,0x16,0xbd,0x8a,0xd0,0x05,0x36,0x24,0x75,0xf5,0x92,0xed,0x8b,0x5a,0x46,0xb7,0x0c,0xf3,0xb8,0xc3,0xaf,0x3f}
   };
-  HANDLE file=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-  if(file==INVALID_HANDLE_VALUE)return false;
-  BCRYPT_ALG_HANDLE algorithm=nullptr;BCRYPT_HASH_HANDLE hash=nullptr;
-  unsigned char digest[32];bool ok=false;
-  if(BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)>=0&&
-     BCryptCreateHash(algorithm,&hash,nullptr,0,nullptr,0,0)>=0) {
-    unsigned char bytes[65536];DWORD count=0;bool readOk=true;
-    for(;;) {
-      if(!ReadFile(file,bytes,sizeof(bytes),&count,nullptr)){readOk=false;break;}
-      if(!count)break;
-      if(BCryptHashData(hash,bytes,count,0)<0){readOk=false;break;}
-    }
-    if(readOk&&BCryptFinishHash(hash,digest,sizeof(digest),0)>=0)
-      for(const auto& candidate:expected)if(std::memcmp(candidate,digest,sizeof(digest))==0)ok=true;
-  }
-  if(hash)BCryptDestroyHash(hash);if(algorithm)BCryptCloseAlgorithmProvider(algorithm,0);
-  CloseHandle(file);return ok;
+  return executable_hash::Matches(path,expected);
 }
 
-inline void Write(void* destination,const void* bytes,size_t size) {
-  DWORD old=0;
-  if(!VirtualProtect(destination,size,PAGE_EXECUTE_READWRITE,&old))throw std::runtime_error("Cannot protect editor script hook");
-  std::memcpy(destination,bytes,size);
-  DWORD ignored=0;VirtualProtect(destination,size,old,&ignored);
-  FlushInstructionCache(GetCurrentProcess(),destination,size);
-}
+using memory_patch::Write;
 inline void Jump(uint8_t* at,const void* destination) {
   uint8_t bytes[5]={0xe9};
   const auto relative=static_cast<uint32_t>(reinterpret_cast<uintptr_t>(destination)-reinterpret_cast<uintptr_t>(at+5));
