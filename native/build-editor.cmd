@@ -13,5 +13,5 @@ cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /LD /I .scratch /Fo:build\ /Fe:build\Too
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /Fo:build\ /Fe:build\editor-proxy-tests.exe native\editor-proxy-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
-cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /Fo:build\ /Fe:build\editor-script-tests.exe native\editor-script-tests.cpp user32.lib /link /DYNAMICBASE /NXCOMPAT
+cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /Fo:build\ /Fe:build\editor-script-tests.exe native\editor-script-tests.cpp user32.lib gdi32.lib /link /DYNAMICBASE /NXCOMPAT
 exit /b %errorlevel%

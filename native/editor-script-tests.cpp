@@ -44,7 +44,6 @@ static void ResolveImports(uint8_t* image,const std::filesystem::path& executabl
 }
 static void __cdecl RefreshTitle(){}
 static int __cdecl NoExitRegistration(void (*)()){return 0;}
-static INT_PTR CALLBACK EmptyDialog(HWND,UINT,WPARAM,LPARAM){return FALSE;}
 static LRESULT CALLBACK Parent(HWND window,UINT message,WPARAM wparam,LPARAM lparam) {
   if(message==WM_COMMAND&&LOWORD(wparam)==0x40a)
     return reinterpret_cast<DLGPROC>(gImage+0x32f20)(window,message,wparam,lparam);
@@ -266,8 +265,228 @@ static void ViewportTests(HWND parent,HWND edit) {
     Require(enter.y>=0&&enter.y<client.bottom,"Enter scrolled the caret out of view");
     std::printf("PASS: line %d; typing, backspace and Enter preserve visible position\n",line);std::fflush(stdout);
   }
-  // This fix must not reintroduce the rolled-back line-number patch.
-  Require(*reinterpret_cast<const uint32_t*>(gImage+0x3373a)==1000,"Original line-number limit was changed");
+}
+struct MarginLabel {std::string text;LONG x,y;};
+struct RenderedFont {LOGFONTW value{};bool found=false;};
+static int CALLBACK RecordFont(HDC,HANDLETABLE*,const ENHMETARECORD* record,int,LPARAM data) {
+  auto& font=*reinterpret_cast<RenderedFont*>(data);
+  if(record->iType==EMR_EXTCREATEFONTINDIRECTW&&!font.found) {
+    font.value=reinterpret_cast<const EMREXTCREATEFONTINDIRECTW*>(record)->elfw.elfLogFont;
+    font.found=true;
+  }
+  return 1;
+}
+static RenderedFont MarginFont(HWND gutter) {
+  const auto reference=GetDC(gutter);
+  const auto dc=CreateEnhMetaFileA(reference,nullptr,nullptr,nullptr);
+  SendMessageA(gutter,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT);
+  const auto metafile=CloseEnhMetaFile(dc);RenderedFont font;
+  EnumEnhMetaFile(nullptr,metafile,RecordFont,&font,nullptr);
+  DeleteEnhMetaFile(metafile);ReleaseDC(gutter,reference);
+  Require(font.found,"Cannot inspect the rendered margin font");return font;
+}
+static void LineNumberFontTest(HWND edit,HWND gutter) {
+  const auto reference=GetDC(edit);
+  auto dc=CreateEnhMetaFileA(reference,nullptr,nullptr,nullptr);
+  FORMATRANGE range{};range.hdc=dc;range.hdcTarget=reference;
+  range.rc={0,0,9000,6000};range.rcPage=range.rc;range.chrg={0,32};
+  SendMessageA(edit,EM_FORMATRANGE,TRUE,reinterpret_cast<LPARAM>(&range));
+  SendMessageA(edit,EM_FORMATRANGE,0,0);
+  auto metafile=CloseEnhMetaFile(dc);RenderedFont script;
+  EnumEnhMetaFile(nullptr,metafile,RecordFont,&script,nullptr);DeleteEnhMetaFile(metafile);
+  dc=CreateEnhMetaFileA(reference,nullptr,nullptr,nullptr);
+  SendMessageA(gutter,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT);
+  metafile=CloseEnhMetaFile(dc);RenderedFont margin;
+  EnumEnhMetaFile(nullptr,metafile,RecordFont,&margin,nullptr);DeleteEnhMetaFile(metafile);
+  ReleaseDC(edit,reference);
+  Require(script.found&&margin.found,"Cannot inspect the rendered script and number fonts");
+  if(script.value.lfHeight!=margin.value.lfHeight)
+    std::fprintf(stderr,"Rendered font height: script %ld, numbers %ld\n",script.value.lfHeight,margin.value.lfHeight);
+  Require(script.value.lfHeight==margin.value.lfHeight&&script.value.lfWidth==margin.value.lfWidth&&
+    script.value.lfWeight==margin.value.lfWeight&&wcscmp(script.value.lfFaceName,margin.value.lfFaceName)==0,
+    "Line-number font differs from Rich Edit's rendered script font");
+  std::puts("PASS: line numbers match Rich Edit's rendered font size, width, weight and typeface");std::fflush(stdout);
+}
+static int CALLBACK RecordMargin(HDC,HANDLETABLE*,const ENHMETARECORD* record,int,LPARAM data) {
+  auto& labels=*reinterpret_cast<std::vector<MarginLabel>*>(data);
+  if(record->iType==EMR_EXTTEXTOUTW) {
+    const auto* text=reinterpret_cast<const EMREXTTEXTOUTW*>(record);
+    const auto* value=reinterpret_cast<const wchar_t*>(reinterpret_cast<const char*>(record)+text->emrtext.offString);
+    std::string label;for(DWORD i=0;i<text->emrtext.nChars;i++)label+=static_cast<char>(value[i]);
+    labels.push_back({label,text->emrtext.ptlReference.x,text->emrtext.ptlReference.y});
+  }
+  return 1;
+}
+static std::vector<MarginLabel> RenderedMargin(HWND gutter) {
+  const auto reference=GetDC(gutter);
+  const auto dc=CreateEnhMetaFileA(reference,nullptr,nullptr,nullptr);
+  Require(dc!=nullptr,"Cannot record line-number painting");
+  SendMessageA(gutter,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT);
+  const auto metafile=CloseEnhMetaFile(dc);
+  std::vector<MarginLabel> labels;
+  Require(EnumEnhMetaFile(nullptr,metafile,RecordMargin,&labels,nullptr)!=0,"Cannot inspect line-number painting");
+  DeleteEnhMetaFile(metafile);ReleaseDC(gutter,reference);return labels;
+}
+static void CheckMargin(HWND edit,HWND gutter) {
+  const auto labels=RenderedMargin(gutter);
+  const auto first=SendMessageA(edit,EM_GETFIRSTVISIBLELINE,0,0);
+  Require(!labels.empty(),"Line-number margin is blank");
+  const auto dc=GetDC(gutter);
+  {
+    editor_scripts::LineNumberFont font(edit,dc);
+    RECT client{};GetClientRect(gutter,&client);
+    POINT origin{};MapWindowPoints(edit,gutter,&origin,1);
+    for(size_t i=0;i<labels.size();i++) {
+      Require(labels[i].text==std::to_string(first+static_cast<LRESULT>(i)+1),"Painted line numbers do not match the visible script");
+      SIZE size{};GetTextExtentPoint32A(dc,labels[i].text.data(),static_cast<int>(labels[i].text.size()),&size);
+      Require(labels[i].x+size.cx==client.right-2,"Line numbers are not aligned against the right margin");
+      const auto y=CharacterPosition(edit,static_cast<LONG>(SendMessageA(edit,EM_LINEINDEX,first+i,0))).y;
+      Require(labels[i].y==y+origin.y,"Line-number baseline is offset from the corresponding script row");
+    }
+  }
+  ReleaseDC(gutter,dc);
+}
+static int MarginWidth(HWND gutter) {RECT rect{};GetWindowRect(gutter,&rect);return rect.right-rect.left;}
+static void EmptyMarginFontTest(HWND parent,HWND edit,HWND gutter) {
+  auto* dialogs=reinterpret_cast<HWND*>(gImage+0x51e3c);dialogs[0]=parent;
+  Require(GetWindowTextLengthA(edit)==0,"Initial script is not empty");
+  const auto initial=MarginFont(gutter);
+  const auto labels=RenderedMargin(gutter);
+  Require(labels.size()==1&&labels[0].text=="1","Empty script did not show only line one");
+  SendMessageA(edit,EM_STOPGROUPTYPING,0,0);
+  SendMessageA(edit,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>("x"));
+  SendMessageA(edit,EM_STOPGROUPTYPING,0,0);
+  Require(ControlText(edit)=="x","Cannot test the first script edit");
+  const auto populated=MarginFont(gutter);
+  if(initial.value.lfHeight!=populated.value.lfHeight)
+    std::fprintf(stderr,"Empty margin font height %ld changed to %ld after first input\n",initial.value.lfHeight,populated.value.lfHeight);
+  Require(initial.value.lfHeight==populated.value.lfHeight&&initial.value.lfWidth==populated.value.lfWidth&&
+    wcscmp(initial.value.lfFaceName,populated.value.lfFaceName)==0,"First-line font changed after the first script edit");
+  LineNumberFontTest(edit,gutter);
+  Require(SendMessageA(edit,EM_UNDO,0,0)!=0&&ControlText(edit).empty(),"Cannot undo the first script edit");
+  const auto undone=MarginFont(gutter);
+  Require(undone.value.lfHeight==initial.value.lfHeight,"Undoing to an empty script shrank the first-line font");
+  CheckMargin(edit,gutter);
+  Require(SendMessageA(edit,EM_REDO,0,0)!=0&&ControlText(edit)=="x","Cannot redo the first script edit");
+  CHARRANGE all{0,-1};SendMessageA(edit,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&all));
+  SendMessageA(edit,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>(""));
+  const auto cleared=MarginFont(gutter);
+  Require(ControlText(edit).empty()&&cleared.value.lfHeight==initial.value.lfHeight,"Clearing the script shrank the first-line font");
+  CheckMargin(edit,gutter);dialogs[0]=nullptr;
+  std::puts("PASS: initial empty margin, first input, Undo/Redo and clearing preserve the first-line font");std::fflush(stdout);
+}
+static void LineNumberScrollTests(HWND parent,HWND edit,HWND gutter) {
+  auto* dialogs=reinterpret_cast<HWND*>(gImage+0x51e3c);
+  for(int i=0;i<5;i++)dialogs[i]=i==0?parent:nullptr;
+  for(const int lines:{95,999}) {
+    std::string shortScript;
+    for(int line=1;line<lines;line++)shortScript+="-- scrollbar regression\r\n";
+    shortScript+="-- end";
+    Require(SetWindowTextA(edit,shortScript.c_str())!=0,"Cannot create scrollbar fixture");
+    SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_CHANGE),reinterpret_cast<LPARAM>(edit));
+    if(lines==95)LineNumberFontTest(edit,gutter);
+    SendMessageA(edit,WM_VSCROLL,SB_TOP,0);
+    SCROLLINFO scroll{sizeof(scroll),SIF_ALL};
+    Require(GetScrollInfo(edit,SB_VERT,&scroll)!=0,"Cannot read script scrollbar");
+    const int halfway=(scroll.nMax-static_cast<int>(scroll.nPage))/2;
+    Require(halfway>0&&halfway<65536,"Scrollbar fixture does not exercise thumb tracking");
+    SendMessageA(edit,WM_VSCROLL,MAKEWPARAM(SB_THUMBTRACK,halfway),0);
+    const auto first=SendMessageA(edit,EM_GETFIRSTVISIBLELINE,0,0);
+    Require(first>0,"Scrollbar thumb did not move the script viewport");
+    CheckMargin(edit,gutter);
+    Require(MarginWidth(gutter)==50,"Margin widened below 1000 lines");
+    std::printf("PASS: scrollbar fixture %d lines; painted margin follows text at line %ld\n",lines,static_cast<long>(first));std::fflush(stdout);
+    SendMessageA(edit,WM_VSCROLL,SB_TOP,0);
+    CheckMargin(edit,gutter);
+  }
+  std::string script;
+  for(int line=0;line<10000;line++)script+="-- line-number scroll regression\r\n";
+  script+="-- end";
+  Require(SetWindowTextA(edit,script.c_str())!=0,"Cannot create line-number scroll fixture");
+  SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_CHANGE),reinterpret_cast<LPARAM>(edit));
+  CHARRANGE start{0,0};SendMessageA(edit,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&start));
+  SendMessageA(edit,WM_VSCROLL,SB_TOP,0);
+  Require(SendMessageA(edit,EM_GETFIRSTVISIBLELINE,0,0)==0,"Cannot return line-number fixture to its start");
+  // Reformatting with scroll notifications suppressed must still paint numbers
+  // from the current viewport instead of retaining a separate scroll offset.
+  const auto mask=SendMessageA(edit,EM_SETEVENTMASK,0,ENM_CHANGE);
+  reinterpret_cast<void (__cdecl*)(HWND,int)>(gImage+0x33b40)(edit,0);
+  CheckMargin(edit,gutter);
+  SendMessageA(edit,EM_SETEVENTMASK,0,mask);
+  editor_scripts::Dialog(parent,WM_SIZE,0,0);
+  CheckMargin(edit,gutter);
+  Require(MarginWidth(gutter)>50,"Margin did not widen for a five-digit line count");
+  for(const int line:{0,50,600,950,1000,3641,4000,7000,9950,0,600,0}) {
+    const LONG character=static_cast<LONG>(SendMessageA(edit,EM_LINEINDEX,line,0)+3);
+    CHARRANGE caret{character,character};SendMessageA(edit,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&caret));
+    SendMessageA(edit,EM_LINESCROLL,0,line-SendMessageA(edit,EM_GETFIRSTVISIBLELINE,0,0));
+    // Exercise the actual scroll notification and syntax-highlighting paths.
+    SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_VSCROLL),reinterpret_cast<LPARAM>(edit));
+    SendMessageA(edit,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>("x"));
+    const auto codeFirst=SendMessageA(edit,EM_GETFIRSTVISIBLELINE,0,0);
+    CheckMargin(edit,gutter);
+    std::printf("PASS: painted margin scroll/edit at line %d; text top %ld\n",line,static_cast<long>(codeFirst));std::fflush(stdout);
+  }
+  Require(SendMessageA(edit,EM_GETFIRSTVISIBLELINE,0,0)==0,"Returning to the script start lost the viewport");
+  CheckMargin(edit,gutter);
+  for(int i=0;i<5;i++)dialogs[i]=nullptr;
+}
+static void LineNumberWidthTests(HWND parent,HWND edit,HWND gutter) {
+  auto* dialogs=reinterpret_cast<HWND*>(gImage+0x51e3c);dialogs[0]=parent;
+  int lastWidth=50;
+  for(const int count:{999,9999}) {
+    std::string script;
+    for(int line=1;line<count;line++)script+="--\r\n";
+    script+="--";
+    SetWindowTextA(edit,script.c_str());
+    SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_CHANGE),reinterpret_cast<LPARAM>(edit));
+    Require(SendMessageA(edit,EM_GETLINECOUNT,0,0)==count,"Width fixture line count changed");
+    const int narrow=MarginWidth(gutter);
+    Require(count==999?narrow==50:narrow>lastWidth,"Margin does not match the total line count's digits");
+    CHARRANGE end{-1,-1};SendMessageA(edit,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&end));
+    SendMessageA(edit,EM_SCROLLCARET,0,0);
+    SendMessageA(edit,EM_STOPGROUPTYPING,0,0);
+    SendMessageA(edit,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>("\r\n"));
+    SendMessageA(edit,EM_STOPGROUPTYPING,0,0);
+    Require(SendMessageA(edit,EM_GETLINECOUNT,0,0)==count+1,"Adding a line did not cross the digit threshold");
+    const int wide=MarginWidth(gutter);Require(wide>narrow,"Margin did not grow at a digit threshold");
+    CheckMargin(edit,gutter);
+    Require(SendMessageA(edit,EM_UNDO,0,0)!=0,"Cannot undo added line");
+    Require(SendMessageA(edit,EM_GETLINECOUNT,0,0)==count&&MarginWidth(gutter)==narrow,"Undo did not shrink the margin");
+    CheckMargin(edit,gutter);
+    Require(SendMessageA(edit,EM_REDO,0,0)!=0,"Cannot redo added line");
+    Require(SendMessageA(edit,EM_GETLINECOUNT,0,0)==count+1&&MarginWidth(gutter)==wide,"Redo did not grow the margin");
+    SendMessageA(edit,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&end));
+    CHARRANGE caret{};SendMessageA(edit,EM_EXGETSEL,0,reinterpret_cast<LPARAM>(&caret));
+    caret.cpMin=caret.cpMax-1;SendMessageA(edit,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&caret));
+    SendMessageA(edit,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>(""));
+    Require(SendMessageA(edit,EM_GETLINECOUNT,0,0)==count&&MarginWidth(gutter)==narrow,"Deleting a line did not shrink the margin");
+    editor_scripts::Dialog(parent,WM_SIZE,0,0);
+    Require(MarginWidth(gutter)==narrow,"Resizing lost the margin width");
+    CheckMargin(edit,gutter);
+    std::printf("PASS: %d <-> %d lines; margin %d <-> %d pixels, right alignment, Undo/Redo and resize\n",count,count+1,narrow,wide);std::fflush(stdout);
+    lastWidth=narrow;
+  }
+  dialogs[0]=nullptr;
+}
+static void LineNumberCapacityTest(HWND parent,HWND edit,HWND gutter) {
+  // Exercise the margin independently of the native syntax formatter: a full
+  // byte budget of CRLFs is the largest line count an editable script can hold.
+  std::string text;const int count=editor_scripts::kMaxTextBytes/2+1;
+  text.reserve(editor_scripts::kMaxTextBytes);
+  for(int line=1;line<count;line++)text+="\r\n";
+  {editor_scripts::Updating guard;Require(SetWindowTextA(edit,text.c_str())!=0,"Cannot create maximum-line fixture");}
+  Require(SendMessageA(edit,EM_GETLINECOUNT,0,0)==count,"Maximum-line fixture lost line breaks");
+  editor_scripts::SyncLineNumbers(parent,edit);
+  SendMessageA(edit,WM_VSCROLL,SB_BOTTOM,0);
+  CheckMargin(edit,gutter);
+  const auto labels=RenderedMargin(gutter);
+  Require(labels.back().text==std::to_string(count),"Margin did not render the script's final line at capacity");
+  std::printf("PASS: %d lines within 1 MiB; final label %s, no fixed number list\n",count,labels.back().text.c_str());std::fflush(stdout);
+  {editor_scripts::Updating guard;SetWindowTextA(edit,"");}
+  editor_scripts::SyncLineNumbers(parent,edit);
+  Require(MarginWidth(gutter)==50,"Clearing a large script did not restore the original margin");
+  CheckMargin(edit,gutter);
 }
 int wmain(int argc,wchar_t** argv) {
   if(argc!=4&&argc!=5){std::fprintf(stderr,"Usage: editor-script-tests.exe editor.exe fixture.bdz output-directory [bundled-boardset.bdz]\n");return 2;}
@@ -331,19 +550,28 @@ int wmain(int argc,wchar_t** argv) {
     Require(RegisterClassA(&cls)!=0,"Cannot register test window");
     const auto parent=CreateWindowA(cls.lpszClassName,"Script test",WS_OVERLAPPED,0,0,600,400,nullptr,nullptr,cls.hInstance,nullptr);
     Require(parent!=nullptr,"Cannot create test parent");
-    const auto edit=CreateWindowExA(0,"RichEdit20A","",WS_CHILD|ES_MULTILINE|ES_AUTOVSCROLL|ES_AUTOHSCROLL,0,0,550,350,parent,reinterpret_cast<HMENU>(0x40a),cls.hInstance,nullptr);
+    // Match resource 114: the scrollbars matter to Rich Edit's pixel mapping.
+    const auto edit=CreateWindowExA(0,"RichEdit20A","",WS_CHILD|WS_VISIBLE|WS_BORDER|WS_VSCROLL|WS_HSCROLL|ES_MULTILINE|ES_AUTOHSCROLL|ES_WANTRETURN,0,0,550,350,parent,reinterpret_cast<HMENU>(0x40a),cls.hInstance,nullptr);
     Require(edit!=nullptr,"Cannot create script control");
-    // Exercise the production WM_INITDIALOG limit without the editor's unrelated
-    // window-manager initialization. All edit notifications use the actual hook.
-    const auto original=editor_scripts::originalDialog;editor_scripts::originalDialog=EmptyDialog;
-    editor_scripts::Dialog(parent,WM_INITDIALOG,0,0);editor_scripts::originalDialog=original;
+    const auto gutter=CreateWindowExA(0,"RichEdit20A","",WS_CHILD|WS_VISIBLE|WS_DISABLED|ES_MULTILINE|ES_READONLY|ES_WANTRETURN,0,3,50,347,parent,reinterpret_cast<HMENU>(0x40b),cls.hInstance,nullptr);
+    Require(gutter!=nullptr,"Cannot create original line-number margin");
+    // Match the font created by the editor's WinMain, not Rich Edit's default.
+    const auto font=CreateFontA(16,12,0,0,0,FALSE,FALSE,FALSE,0,0,0,0,0,"Courier New");
+    Require(font!=nullptr,"Cannot create original script font");
+    *reinterpret_cast<HFONT*>(gImage+0x51dd8)=font;
+    editor_scripts::Dialog(parent,WM_INITDIALOG,0,0);
+    editor_scripts::Dialog(parent,WM_SIZE,0,0);
     Require(SendMessageA(edit,EM_GETLIMITTEXT,0,0)==editor_scripts::kMaxTextBytes,"Script input limit was not raised");
-    SendMessageA(edit,EM_SETEVENTMASK,0,ENM_CHANGE);
+    SendMessageA(edit,EM_SETEVENTMASK,0,ENM_CHANGE|ENM_SCROLL);
+    EmptyMarginFontTest(parent,edit,gutter);
     if(GetEnvironmentVariableA("AEX_EDITOR_INPUT_AUDIT",nullptr,0))InputAudit(parent,edit);
     HighlightIntegrityTests(parent,edit);
     InlineCommentTests(parent,edit);
     CommentTests(parent,edit);
     ViewportTests(parent,edit);
+    LineNumberScrollTests(parent,edit,gutter);
+    LineNumberWidthTests(parent,edit,gutter);
+    LineNumberCapacityTest(parent,edit,gutter);
     auto* dialogs=reinterpret_cast<HWND*>(gImage+0x51e3c);
     std::array<std::string,5> expected;
     const std::array<size_t,5> lengths={16383,16384,65536,262144,editor_scripts::kMaxTextBytes};
@@ -392,6 +620,6 @@ int wmain(int argc,wchar_t** argv) {
     SendMessageA(parent,WM_COMMAND,MAKEWPARAM(0x40a,EN_CHANGE),reinterpret_cast<LPARAM>(edit));Same(4,"-- small script after a full buffer");
     Require(reinterpret_cast<DLGPROC>(gImage+0x32f20)(parent,WM_NULL,0,0)==FALSE,"Original dialog fallback trampoline failed");
     std::puts("PASS: clear/re-edit after capacity and original dialog fallback");
-    DestroyWindow(parent);return 0;
+    DestroyWindow(parent);DeleteObject(font);return 0;
   }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }

@@ -4,14 +4,18 @@
 #include <windows.h>
 #include <richedit.h>
 #include <richole.h>
+#include <commctrl.h>
 #include <tom.h>
 #include <bcrypt.h>
+#include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
 #pragma comment(lib,"bcrypt.lib")
+#pragma comment(lib,"comctl32.lib")
+#pragma comment(lib,"gdi32.lib")
 
 namespace editor_scripts {
 inline constexpr int kBufferBytes=1024*1024;
@@ -161,6 +165,127 @@ struct SuspendedUndo {
   ~SuspendedUndo(){if(document){document->Undo(tomResume,nullptr);document->Release();}}
 };
 
+struct LineNumberFont {
+  HDC dc;HFONT font=nullptr;HGDIOBJ previous=nullptr;
+  LineNumberFont(HWND control,HDC context):dc(context) {
+    // The default/insertion format can retain the initial 9.75pt font after
+    // RTF \plain changes the text runs to 12pt. Read an actual run through TOM
+    // without changing the user's selection; WM_GETFONT also returns null.
+    CHARFORMAT2A format{};format.cbSize=sizeof(format);
+    SendMessageA(control,EM_GETCHARFORMAT,SCF_DEFAULT,reinterpret_cast<LPARAM>(&format));
+    IRichEditOle* richOle=nullptr;ITextDocument* document=nullptr;
+    ITextRange* range=nullptr;ITextFont* textFont=nullptr;
+    SendMessageA(control,EM_GETOLEINTERFACE,0,reinterpret_cast<LPARAM>(&richOle));
+    if(richOle){richOle->QueryInterface(__uuidof(ITextDocument),reinterpret_cast<void**>(&document));richOle->Release();}
+    if(document){document->Range(0,1,&range);document->Release();}
+    if(range) {
+      // A fresh empty document has no formatted run yet. Use the 12pt size
+      // that the native RTF formatter applies as soon as text is entered.
+      GETTEXTLENGTHEX length{GTL_NUMCHARS,1200};
+      if(SendMessageA(control,EM_GETTEXTLENGTHEX,reinterpret_cast<WPARAM>(&length),0)==0)format.yHeight=240;
+      else range->GetFont(&textFont);
+      range->Release();
+    }
+    if(textFont) {
+      float points=0;
+      if(SUCCEEDED(textFont->GetSize(&points))&&points>0)
+        format.yHeight=static_cast<LONG>(points*20+0.5f);
+      textFont->Release();
+    }
+    if(format.yHeight>0&&format.szFaceName[0]) {
+      LOGFONTA description{};
+      description.lfHeight=-MulDiv(format.yHeight,GetDeviceCaps(dc,LOGPIXELSY),1440);
+      description.lfWeight=(format.dwEffects&CFE_BOLD)?FW_BOLD:FW_NORMAL;
+      description.lfItalic=(format.dwEffects&CFE_ITALIC)!=0;
+      description.lfCharSet=format.bCharSet;description.lfPitchAndFamily=format.bPitchAndFamily;
+      strcpy_s(description.lfFaceName,format.szFaceName);
+      font=CreateFontIndirectA(&description);
+    }
+    const auto selected=font?font:*reinterpret_cast<const HFONT*>(base+0x51dd8);
+    if(selected)previous=SelectObject(dc,selected);
+  }
+  ~LineNumberFont(){if(previous)SelectObject(dc,previous);if(font)DeleteObject(font);}
+};
+
+inline int LineNumberWidth(HWND control) {
+  auto count=SendMessageA(control,EM_GETLINECOUNT,0,0);
+  int digits=1;while(count>=10){count/=10;digits++;}
+  if(digits<=3)return 50;
+  const auto dc=GetDC(control);
+  if(!dc)return 50+(digits-3)*12;
+  SIZE digit{};
+  {LineNumberFont font(control,dc);GetTextExtentPoint32A(dc,"0",1,&digit);}
+  ReleaseDC(control,dc);
+  return 50+(digits-3)*(digit.cx>0?digit.cx:12);
+}
+
+inline void PaintLineNumbers(HWND numbers,HDC dc) {
+  const auto control=GetDlgItem(GetParent(numbers),0x40a);
+  RECT client{};GetClientRect(numbers,&client);
+  const auto saved=SaveDC(dc);
+  IntersectClipRect(dc,client.left,client.top,client.right,client.bottom);
+  FillRect(dc,&client,GetSysColorBrush(COLOR_3DFACE));
+  if(control) {
+    LineNumberFont font(control,dc);
+    SetBkMode(dc,TRANSPARENT);SetTextColor(dc,GetSysColor(COLOR_WINDOWTEXT));
+    POINT origin{};MapWindowPoints(control,numbers,&origin,1);
+    const auto count=SendMessageA(control,EM_GETLINECOUNT,0,0);
+    // Paint only visible rows. There is no fixed label list to exhaust, nor a
+    // second document to allocate/reformat when a script has many short lines.
+    for(auto line=SendMessageA(control,EM_GETFIRSTVISIBLELINE,0,0);line<count;line++) {
+      const auto character=SendMessageA(control,EM_LINEINDEX,line,0);
+      if(character<0)break;
+      POINT position{};
+      SendMessageA(control,EM_POSFROMCHAR,reinterpret_cast<WPARAM>(&position),character);
+      const LONG top=position.y+origin.y;
+      if(top>=client.bottom)break;
+      char label[16];const auto end=std::to_chars(label,label+sizeof(label),line+1).ptr;
+      RECT row{0,top,client.right-2,client.bottom};
+      DrawTextA(dc,label,static_cast<int>(end-label),&row,DT_RIGHT|DT_SINGLELINE|DT_NOPREFIX);
+    }
+  }
+  if(saved)RestoreDC(dc,saved);
+}
+
+inline LRESULT CALLBACK LineNumberPaint(HWND numbers,UINT message,WPARAM wparam,LPARAM lparam,UINT_PTR id,DWORD_PTR) {
+  if(message==WM_PAINT) {
+    PAINTSTRUCT paint{};const auto dc=BeginPaint(numbers,&paint);
+    if(dc)PaintLineNumbers(numbers,dc);
+    EndPaint(numbers,&paint);return 0;
+  }
+  if(message==WM_PRINTCLIENT||(message==WM_PRINT&&(lparam&PRF_CLIENT))) {
+    PaintLineNumbers(numbers,reinterpret_cast<HDC>(wparam));return 0;
+  }
+  if(message==WM_ERASEBKGND)return 1;
+  if(message==WM_NCDESTROY)RemoveWindowSubclass(numbers,LineNumberPaint,id);
+  return DefSubclassProc(numbers,message,wparam,lparam);
+}
+
+inline void SyncLineNumbers(HWND dialog,HWND control) {
+  const auto numbers=GetDlgItem(dialog,0x40b);
+  if(!control||!numbers)return;
+  Updating guard;
+  const int width=LineNumberWidth(control);
+  RECT margin{};GetWindowRect(numbers,&margin);
+  if(margin.right-margin.left!=width) {
+    RECT client{};GetClientRect(dialog,&client);
+    MoveWindow(control,width,0,client.right>width?client.right-width:0,client.bottom,TRUE);
+    MoveWindow(numbers,0,3,width,client.bottom>3?client.bottom-3:0,TRUE);
+  }
+  InvalidateRect(numbers,nullptr,FALSE);
+}
+
+inline LRESULT CALLBACK ScriptScroll(HWND control,UINT message,WPARAM wparam,LPARAM lparam,UINT_PTR id,DWORD_PTR) {
+  if(message==WM_NCDESTROY)RemoveWindowSubclass(control,ScriptScroll,id);
+  const auto result=DefSubclassProc(control,message,wparam,lparam);
+  // Rich Edit does not reliably send EN_VSCROLL for scrollbar thumb tracking.
+  // Observe the completed control operation as well as its notifications.
+  if(!updating&&(message==WM_VSCROLL||message==WM_MOUSEWHEEL||message==WM_KEYDOWN||
+     message==EM_SCROLL||message==EM_LINESCROLL||message==EM_SETSCROLLPOS||message==EM_SCROLLCARET))
+    SyncLineNumbers(GetParent(control),control);
+  return result;
+}
+
 inline void Highlight(HWND control,int kind) {
   Updating guard;
   // Replacing the RTF document must not become an undoable user edit. Doing
@@ -188,6 +313,7 @@ inline void Highlight(HWND control,int kind) {
     if(currentFirstLine==firstVisibleLine)break;
     SendMessageA(control,EM_LINESCROLL,0,firstVisibleLine-currentFirstLine);
   }
+  SyncLineNumbers(GetParent(control),control);
   SendMessageA(control,WM_SETREDRAW,TRUE,0);
   InvalidateRect(control,nullptr,FALSE);
 }
@@ -221,6 +347,10 @@ inline void Changed(HWND dialog,HWND control,int kind) {
 }
 
 inline INT_PTR CALLBACK Dialog(HWND dialog,UINT message,WPARAM wparam,LPARAM lparam) {
+  if(message==WM_COMMAND&&LOWORD(wparam)==0x40a&&HIWORD(wparam)==EN_VSCROLL) {
+    if(!updating)SyncLineNumbers(dialog,reinterpret_cast<HWND>(lparam));
+    return TRUE;
+  }
   if(message==WM_COMMAND&&LOWORD(wparam)==0x40a&&HIWORD(wparam)==EN_CHANGE) {
     if(updating)return TRUE;
     const int kind=Kind(dialog);
@@ -230,7 +360,18 @@ inline INT_PTR CALLBACK Dialog(HWND dialog,UINT message,WPARAM wparam,LPARAM lpa
     Updating guard;
     const auto control=GetDlgItem(dialog,0x40a);
     SendMessageA(control,EM_EXLIMITTEXT,0,kMaxTextBytes);
-    return originalDialog(dialog,message,wparam,lparam);
+    const auto result=originalDialog(dialog,message,wparam,lparam);
+    SetWindowSubclass(control,ScriptScroll,reinterpret_cast<UINT_PTR>(&ScriptScroll),0);
+    const auto numbers=GetDlgItem(dialog,0x40b);
+    if(SetWindowSubclass(numbers,LineNumberPaint,reinterpret_cast<UINT_PTR>(&LineNumberPaint),0))
+      SetWindowTextA(numbers,"");
+    SyncLineNumbers(dialog,control);
+    return result;
+  }
+  if(message==WM_SIZE) {
+    const auto result=originalDialog(dialog,message,wparam,lparam);
+    SyncLineNumbers(dialog,GetDlgItem(dialog,0x40a));
+    return result;
   }
   return originalDialog(dialog,message,wparam,lparam);
 }
