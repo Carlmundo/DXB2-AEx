@@ -1,6 +1,6 @@
-// Run native invisible-brick damage, falling and zap updates in a mapped executable.
+// Run native brick damage, falling, zap and multiply updates in a mapped executable.
 // Presentation, Lua and score callbacks are replaced; no live saves are used.
-#include "invisible-bricks.hpp"
+#include "brick-behaviour.hpp"
 #include "verified-game.hpp"
 #include "geometry.hpp"
 #include <array>
@@ -315,7 +315,9 @@ static void* __fastcall CopyBoard(void* destination,void*,void* source) {
 }
 static void __cdecl Dirty(int x,int y) {
   ++gDraws;gTouched[x*20+y]=true;
-  if(gCheckReveal)Require(!(falling_tests::Cell(falling_tests::gStorage,gLayer,x,y)[2]&2),"Multiply redraw observed a hidden replacement brick");
+  auto* cell=falling_tests::Cell(falling_tests::gStorage,gLayer,x,y);
+  if(gCheckReveal&&gDefinitions[cell[1]*9]!=9)
+    Require(!(cell[2]&2),"Multiply redraw observed a hidden replacement brick");
 }
 static __declspec(naked) void Execute() {
   __asm {
@@ -357,6 +359,17 @@ static void Multiply() {
   Require(At<int>(0x1a7124)==123&&At<int>(0x1a712c)==7&&gScores==0,"Multiply changed hit/destruction accounting");
   Require(gDraws>0,"Multiply did not update any neighbours");
 }
+static void PrepareSwitches(int width,int stride,int layer,int x,int y,bool hidden) {
+  PrepareMultiply(width,stride,layer,x,y,hidden);
+  gDefinitions[3*9]=gDefinitions[8*9]=9;
+  for(int col=x-1;col<=x+1;col++)for(int row=y-1;row<=y+1;row++) {
+    if(col<0||col>=width||row<0||row>=20||(col==x&&row==y))continue;
+    auto* cell=falling_tests::Cell(falling_tests::gStorage,layer,col,row);
+    // Different IDs for switches, plus ID 9 with a normal definition, catch
+    // accidental checks of the ID rather than the brick definition's type.
+    cell[1]=(col+row)%3==0?9:(col+row)%3==1?3:8;
+  }
+}
 static void ReproduceOriginal() {
   JumpTo(gBase,0x53ab0,reinterpret_cast<void*>(&CopyBoard));
   JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&Dirty));
@@ -365,6 +378,11 @@ static void ReproduceOriginal() {
   auto* overwritten=falling_tests::Cell(falling_tests::gStorage,0,6,6);
   Require(overwritten[1]==2&&(overwritten[2]&2),"Original hidden Multiply Exploding replacement bug not reproduced");
   std::puts("PASS: original Multiply Exploding leaves replacement exploding bricks hidden");
+  PrepareSwitches(26,0x2094,0,5,6,true);
+  Require(falling_tests::Cell(falling_tests::gStorage,0,4,6)[1]==3,"Switch fixture has the wrong ID");
+  Multiply();
+  Require(falling_tests::Cell(falling_tests::gStorage,0,4,6)[1]==2,"Original switch conversion bug not reproduced");
+  std::puts("PASS: original Multiply Exploding replaces a type-9 switch brick");
 }
 static void CaptureReferences() {
   JumpTo(gBase,0x84ee0,reinterpret_cast<void*>(&Dirty));
@@ -391,32 +409,58 @@ static void RunPatched() {
   gCheckReveal=false;
   std::printf("PASS: %zu native Multiply Exploding cases; replacements visible before redraw, native placement preserved across widths, layers, edges and repeated pickups\n",index);
 }
+static void RunSwitches() {
+  gCheckReveal=true;int cases=0;
+  for(int width:{20,26,37})for(int layer:{0,1,2})for(int x:{0,width/2,width-1})for(int y:{0,10,19})for(bool hidden:{false,true}) {
+    PrepareSwitches(width,0x2e54,layer,x,y,hidden);
+    auto expected=falling_tests::gStorage;
+    for(int col=x-1;col<=x+1;col++)for(int row=y-1;row<=y+1;row++) {
+      if(col<0||col>=width||row<0||row>=20)continue;
+      auto* cell=falling_tests::Cell(expected,layer,col,row);
+      if(gDefinitions[cell[1]*9]==9)continue;
+      cell[1]=2;cell[2]&=~2u;
+    }
+    Multiply();
+    Require(falling_tests::gStorage==expected,"Multiply did not preserve switches while converting eligible neighbours");
+    for(int step=0;step<2;step++) {
+      Multiply();
+      for(int col=0;col<width;col++)for(int row=0;row<20;row++) {
+        auto* before=falling_tests::Cell(expected,layer,col,row);
+        if(gDefinitions[before[1]*9]==9)
+          Require(!std::memcmp(before,falling_tests::Cell(falling_tests::gStorage,layer,col,row),16),"Repeated Multiply changed switch ID, flags or metadata");
+      }
+    }
+    ++cases;
+  }
+  gCheckReveal=false;
+  std::printf("PASS: %d switch neighbourhoods across widths, layers, edges and hidden states; switch IDs, flags and metadata survive repeated Multiply pickups, normal ID 9 still converts\n",cases);
+}
 }
 
 int wmain(int argc,wchar_t** argv) {
-  if(argc!=2){std::fprintf(stderr,"Usage: invisible-bricks-tests.exe path-to-DXBall2.exe\n");return 2;}
+  if(argc!=2){std::fprintf(stderr,"Usage: brick-behaviour-tests.exe path-to-DXBall2.exe\n");return 2;}
   SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,Fault);
   try {
     Require(VerifiedGame(argv[1]),"Unsupported executable hash");
     auto module=LoadLibraryExW(argv[1],nullptr,DONT_RESOLVE_DLL_REFERENCES);
     Require(module!=nullptr,"Could not map game");gBase=reinterpret_cast<uint8_t*>(module);
-    invisible_bricks::Verify(gBase);
+    brick_behaviour::Verify(gBase);
     const uint8_t wrong=0xcc,original=gBase[0x85f40];WriteMemory(gBase+0x85f40,&wrong,1);
-    bool rejected=false;try{invisible_bricks::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
+    bool rejected=false;try{brick_behaviour::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
     Require(rejected,"Unexpected instruction was accepted");WriteMemory(gBase+0x85f40,&original,1);
     const uint8_t moveOriginal=gBase[0x5c725];WriteMemory(gBase+0x5c725,&wrong,1);
-    rejected=false;try{invisible_bricks::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
+    rejected=false;try{brick_behaviour::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
     Require(rejected,"Unexpected move call was accepted");
     Require(gBase[0x85f40]==original,"Failed move verification partially installed the damage fix");
     WriteMemory(gBase+0x5c725,&moveOriginal,1);
     const uint8_t zapOriginal=gBase[0x8c27b];WriteMemory(gBase+0x8c27b,&wrong,1);
-    rejected=false;try{invisible_bricks::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
+    rejected=false;try{brick_behaviour::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
     Require(rejected,"Unexpected zap instruction was accepted");
     Require(gBase[0x85f40]==original&&gBase[0x5c725]==moveOriginal,"Failed zap verification partially installed a fix");
     WriteMemory(gBase+0x8c27b,&zapOriginal,1);
-    for(const auto rva:invisible_bricks::multiplyCalls) {
+    for(const auto rva:brick_behaviour::multiplyCalls) {
       const uint8_t before=gBase[rva];WriteMemory(gBase+rva,&wrong,1);
-      rejected=false;try{invisible_bricks::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
+      rejected=false;try{brick_behaviour::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
       Require(rejected,"Unexpected multiply call was accepted");
       Require(gBase[0x85f40]==original&&gBase[0x5c725]==moveOriginal&&gBase[0x8c27b]==zapOriginal,"Failed multiply verification partially installed a fix");
       WriteMemory(gBase+rva,&before,1);
@@ -452,7 +496,7 @@ int wmain(int argc,wchar_t** argv) {
     ApplyGridPatches(gBase);
     zap_tests::CaptureReferences();
     multiply_tests::CaptureReferences();
-    invisible_bricks::Install(gBase);
+    brick_behaviour::Install(gBase);
     Geometry geometry;geometry.base=gBase;geometry.Install();
     int cases=0;
     for(int width:{20,26,37}) {
@@ -478,6 +522,7 @@ int wmain(int argc,wchar_t** argv) {
     falling_tests::RunPatched();
     zap_tests::RunPatched();
     multiply_tests::RunPatched();
+    multiply_tests::RunSwitches();
     return 0;
   }catch(const std::exception& error){std::fprintf(stderr,"FAIL: %s\n",error.what());return 1;}
 }

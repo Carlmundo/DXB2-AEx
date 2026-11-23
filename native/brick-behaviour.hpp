@@ -1,7 +1,7 @@
 #pragma once
 #include "patch.hpp"
 
-namespace invisible_bricks {
+namespace brick_behaviour {
 inline uint8_t* game=nullptr;
 inline void* reveal=nullptr;
 inline void* visible=nullptr;
@@ -39,10 +39,15 @@ inline void __cdecl MoveBrick(int x,int y,int id,int layer) {
   reinterpret_cast<SetBrick>(game+0x8c1a0)(x,y,id,layer);
 }
 inline bool __fastcall MultiplyBrick(void* boardset,void*,int x,int y,int id,int layer) {
+  using GetCell=uint32_t* (__thiscall*)(void*,int,int,int);
+  auto* cell=reinterpret_cast<GetCell>(game+0x85890)(boardset,x,y,layer);
+  using BrickType=int (__thiscall*)(void*,int);
+  // Preserve switch bricks, including their flags and script metadata. The
+  // definition's type identifies a switch; its board-specific ID can vary.
+  if(cell[1]&&reinterpret_cast<BrickType>(game+0x858f0)(boardset,cell[1])==9)return false;
   // Multiply Exploding replaces the brick ID but leaves the destination's
   // flags in place. Its new exploding brick must not inherit invisibility.
-  using GetCell=uint32_t* (__thiscall*)(void*,int,int,int);
-  reinterpret_cast<GetCell>(game+0x85890)(boardset,x,y,layer)[2]&=~2u;
+  cell[2]&=~2u;
   using SetBrick=bool (__thiscall*)(void*,int,int,int,int);
   return reinterpret_cast<SetBrick>(game+0x8adf0)(boardset,x,y,id,layer);
 }

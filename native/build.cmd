@@ -41,7 +41,7 @@ cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\music-v
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\loaded-paddle-tests.exe native\loaded-paddle-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
-cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\invisible-bricks-tests.exe native\invisible-bricks-tests.cpp /link /DYNAMICBASE /NXCOMPAT
+cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\brick-behaviour-tests.exe native\brick-behaviour-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /I .scratch /Fo:build\ /Fe:build\laser-paddle-tests.exe native\laser-paddle-tests.cpp /link /DYNAMICBASE /NXCOMPAT
 if errorlevel 1 exit /b %errorlevel%

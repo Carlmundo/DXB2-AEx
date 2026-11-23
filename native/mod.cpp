@@ -14,7 +14,7 @@
 #include "lives-counter.hpp"
 #include "music-volume.hpp"
 #include "loaded-paddle.hpp"
-#include "invisible-bricks.hpp"
+#include "brick-behaviour.hpp"
 #include "laser-paddle.hpp"
 #include "launch-angle.hpp"
 #include "board-order.hpp"
@@ -184,7 +184,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     aex_update::Verify(gGame);
     VerifyLivesCounter(gGame);
     loaded_paddle::Verify(gGame);
-    invisible_bricks::Verify(gGame);
+    brick_behaviour::Verify(gGame);
     laser_paddle::Verify(gGame,config.holdClickFire);
     if(config.launchAngle)launch_angle::Verify(gGame);
     board_order::Verify(gGame);
@@ -211,7 +211,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     gGeometry.Install();
     InstallLivesCounter(gGame);
     loaded_paddle::Install(gGame);
-    invisible_bricks::Install(gGame);
+    brick_behaviour::Install(gGame);
     laser_paddle::Install(gGame,config.holdClickFire);
     board_order::Install(gGame);
     online_leaderboards::Install(gGame);
