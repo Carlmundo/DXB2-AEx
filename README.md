@@ -23,6 +23,7 @@ Windows users can ignore the next additional steps.
 - Block dangerous code from community content
 - Stop a specific "cheat code" from being able to reset Steam achievements
 - Use online leaderboards for specific community content
+- Press Tab when viewing online scores to cycle between your rank, Friends and Top 15
 - Fixes:
 	- Online scores could not be viewed before submitting a score for that boardset
 	- Music becoming silent and/or muted notes at lower Master and Music volume settings
@@ -34,6 +35,7 @@ Windows users can ignore the next additional steps.
 		- were not revealed by Zap Bricks
 		- stayed hidden when changed to an exploding brick by Expand
 	- Reflected laser shots permanently using up ammo after hitting permanent bricks with Thru Brick (under Classic Rules)
+	- Switch bricks being converted into exploding bricks by Expand
 
 You can enable and disable options in `aex.cfg`.
 
@@ -45,6 +47,13 @@ You can enable and disable options in `aex.cfg`.
 	- `{}\` characters in comments deleting code
 	- typing `--` from moving preceding text to the end of the line
 	- a space being added after a final newline
+	- Line number margin:
+		- showing numbers for lines that didn't exist
+		- showing incorrect numbers when scrolling
+		- counter starting at 0
+
+### Workshop Helper
+- Fixed the uploaded description being cut off at 253 characters (now supports the full 8000 characters)
 
 ## Build
 Prerequisites:
@@ -63,5 +72,5 @@ dumpbin /disasm ".scratch\game\DXBall2.exe" > ".scratch\dxball2.asm"
 Build:
 ```
 native\build.cmd
-native\build-editor.cmd
+native\build-tools.cmd
 ```
