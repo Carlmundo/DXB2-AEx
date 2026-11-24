@@ -19,6 +19,7 @@
 #include "laser-paddle.hpp"
 #include "launch-angle.hpp"
 #include "board-order.hpp"
+#include "community-assets.hpp"
 #include "online-leaderboards.hpp"
 #include "rehab-mode.hpp"
 #include <intrin.h>
@@ -190,6 +191,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     laser_paddle::Verify(gGame,config.holdClickFire);
     if(config.launchAngle)launch_angle::Verify(gGame);
     board_order::Verify(gGame);
+    community_assets::Verify(gGame);
     online_leaderboards::Verify(gGame);
     if(config.rehabMode)rehab_mode::Verify(gGame);
     auto* audio=reinterpret_cast<uint8_t*>(GetModuleHandleW(L"Audiow32.dll"));
@@ -217,6 +219,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     charm_spawn::Install(gGame);
     laser_paddle::Install(gGame,config.holdClickFire);
     board_order::Install(gGame);
+    community_assets::Install(gGame);
     online_leaderboards::Install(gGame);
     if(config.rehabMode){rehab_mode::Install(gGame);Log("RehabMode enabled: unlimited paddles, number-key ball speeds, local/online scores disabled; saved sessions remain ineligible.");}
     if(config.launchAngle){launch_angle::Install(gGame);Log("LaunchAngle enabled: fresh balls start 6 pixels right of the paddle centre.");}

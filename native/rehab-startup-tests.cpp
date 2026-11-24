@@ -43,6 +43,8 @@ int wmain(int argc,wchar_t** argv) {
     gMapped=reinterpret_cast<uint8_t*>(LoadLibraryExW(gExePath.c_str(),nullptr,DONT_RESOLVE_DLL_REFERENCES));Require(gMapped!=nullptr,"Cannot map game");
     aex_update::gCreateProcess=&NoCheckProcess;
     Require(DllMain(GetModuleHandleW(nullptr),DLL_PROCESS_ATTACH,nullptr)!=FALSE,"Production DLL initialization failed");
+    for(const auto rva:community_assets::kFindCalls)
+      Require(gMapped+rva+5+*reinterpret_cast<int32_t*>(gMapped+rva+1)==reinterpret_cast<uint8_t*>(&community_assets::Find),"Production community asset hook missing");
     Require(gCheckLaunches==0,"Update checker created a process while holding loader lock");
     const bool on=std::wcscmp(argv[3],L"1")==0;
     Require((*reinterpret_cast<int*>(gMapped+rehab_mode::kFlag)!=0)==on&&rehab_mode::enabled==on,"Production config gating failed");
