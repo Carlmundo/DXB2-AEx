@@ -1,6 +1,8 @@
 // Execute the native eligibility branches, name builder and Steam state machine.
 // Steam is replaced with a fake interface; no real scores or saves are touched.
 #include "online-leaderboards.hpp"
+#include "aex-update.hpp"
+#include <atomic>
 #include "verified-game.hpp"
 #include <array>
 #include <cstdlib>
@@ -15,6 +17,97 @@ static int gCustom=0;
 template<class T> static T& At(void* object,size_t offset) {return *reinterpret_cast<T*>(static_cast<uint8_t*>(object)+offset);}
 template<class T> static T& Global(size_t offset) {return At<T>(gBase,offset);}
 static void Require(bool ok,const char* message) {if(!ok)throw std::runtime_error(message);}
+// Parser and startup-download tests use synthetic identifiers and fictional board data.
+namespace blocklist_tests {
+static std::atomic<int> gFetches{0};
+static int gLaunches=0;
+static bool gFailLaunch=false,gFailFetch=false,gThrowFetch=false;
+static std::string gText;
+static HANDLE gCheckComplete=nullptr;
+static bool Fetch(std::string& text) {
+  ++gFetches;
+  if(gThrowFetch)throw std::runtime_error("Simulated HTTP exception");
+  text=gText;return !gFailFetch;
+}
+static BOOL WINAPI CreateChecker(LPCWSTR,LPWSTR,LPSECURITY_ATTRIBUTES,LPSECURITY_ATTRIBUTES,BOOL,DWORD,
+    LPVOID,LPCWSTR,LPSTARTUPINFOW,LPPROCESS_INFORMATION child) {
+  ++gLaunches;
+  if(gFailLaunch)return FALSE;
+  child->hProcess=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+  child->hThread=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+  Require(child->hProcess&&child->hThread,"Cannot create fake checker");
+  Require(DuplicateHandle(GetCurrentProcess(),child->hProcess,GetCurrentProcess(),&gCheckComplete,
+    EVENT_MODIFY_STATE,FALSE,0)!=FALSE,"Cannot retain checker completion signal");
+  return TRUE;
+}
+static void AwaitFinished() {
+  const auto deadline=GetTickCount64()+5000;
+  while(!InterlockedCompareExchange(&score_blocklist::finished,0,0)&&GetTickCount64()<deadline)Sleep(1);
+  Require(score_blocklist::finished!=0,"Blocklist worker did not finish");
+}
+static void Run() {
+    const uint64_t blocked=90000000000000001ull,other=90000000000000007ull;
+    Require(score_blocklist::Parse("").empty(),"Empty blocklist is not empty");
+    Require(score_blocklist::Parse("\xef\xbb\xbf 90000000000000007 \r\n\n90000000000000001\r\n90000000000000001\n")
+      ==std::vector<uint64_t>({blocked,other}),"BOM, CRLF, whitespace, precision or duplicates mishandled");
+    Require(score_blocklist::Parse("0\n-1\n+1\n18446744073709551616 # overflow\n<html>\n# 90000000000000001\n").empty(),
+      "Malformed lines or overflowing IDs accepted");
+    Require(score_blocklist::Parse("18446744073709551615")==std::vector<uint64_t>({UINT64_MAX}),"uint64 maximum rejected");
+    std::puts("PASS: exact 64-bit SteamIDs, BOM/CRLF/LF, final line, whitespace, duplicates, empty and malformed lines, overflow");
+    const char* annotated=
+      "90000000000000001 # Test Set Alpha (Normal) - 111111111\\\r\n"
+      "90000000000000002 # Test Set Alpha (Wide) (Normal) - 222222222\\\r\n"
+      "90000000000000003 # Test Set Beta (Normal) - 3333333\\\r\n"
+      "90000000000000004 # Test Set Beta (Normal) - 4444444\\\r\n"
+      "90000000000000005 # Test Set Gamma (Normal) - 555555\\\r\n"
+      "90000000000000006 # Test Set Alpha (Wide) (Casual) - 666666666";
+    std::vector<uint64_t> expected={90000000000000001ull,90000000000000002ull,90000000000000003ull,
+      90000000000000004ull,90000000000000005ull,90000000000000006ull};
+    std::sort(expected.begin(),expected.end());
+    Require(score_blocklist::Parse(annotated)==expected,"Annotated six-user blocklist was not parsed correctly");
+    Require(score_blocklist::Parse(" \t90000000000000001#comment 90000000000000007\n90000000000000001 trailing text\n")
+      ==std::vector<uint64_t>{blocked},"Trailing text was not ignored or more than one ID was read from a line");
+    std::puts("PASS: six synthetic annotated entries; leading whitespace; comments/arbitrary suffixes; trailing backslashes; one ID per line; duplicates removed");
+    score_blocklist::fetch=&Fetch;aex_update::gCreateProcess=&CreateChecker;
+    aex_update::gAfterUpdateCheck=&score_blocklist::StartOnce;
+    for(int scenario=0;scenario<6;++scenario) {
+      score_blocklist::started=score_blocklist::finished=0;score_blocklist::Publish({});
+      aex_update::gCheckStarted=aex_update::gStartupTaskStarted=0;
+      aex_update::gCheckForUpdates=scenario!=1;
+      gFailLaunch=scenario==2;gFailFetch=scenario==3;gThrowFetch=scenario==4;
+      gText=scenario==5?std::string(score_blocklist::kMaxBytes+1,'1'):"90000000000000001 # Example board - 111111111\r\n";
+      gFetches=0;const int launches=gLaunches;
+      aex_update::CheckForUpdatesOnce();
+      Require(gLaunches==launches+(scenario!=1),"Wrong update-check launch count");
+      if(aex_update::gUpdater) {
+        // Close the original before completion: the worker must own a duplicate.
+        CloseHandle(aex_update::gUpdater);aex_update::gUpdater=nullptr;
+        Sleep(25);Require(gFetches==0,"Blocklist downloaded before the update check finished");
+        SetEvent(gCheckComplete);CloseHandle(gCheckComplete);gCheckComplete=nullptr;
+      }
+      AwaitFinished();
+      Require(gFetches==1,"Blocklist was not fetched exactly once");
+      Require(score_blocklist::ids==(scenario<3?std::vector<uint64_t>{blocked}:std::vector<uint64_t>{}),
+        "Failed/oversized download published IDs, or successful download was lost");
+      for(int repeat=0;repeat<3;++repeat)aex_update::CheckForUpdatesOnce();
+      Require(gFetches==1&&gLaunches==launches+(scenario!=1),"Startup downloads repeated");
+      aex_update::CloseSignals();
+    }
+    std::puts("PASS: asynchronous fetch after update-check completion; disabled/failed checks still fetch; duplicate handle ownership; once per startup; offline/exception/oversized responses fail open");
+    score_blocklist::started=score_blocklist::finished=0;score_blocklist::enabled=false;
+    const int fetches=gFetches;score_blocklist::StartOnce(nullptr);
+    Require(!score_blocklist::started&&!score_blocklist::finished&&gFetches==fetches,"Disabled score filtering started a download");
+    score_blocklist::enabled=true;
+    std::puts("PASS: disabled FilterScores starts no worker or blocklist download");
+    score_blocklist::fetch=&score_blocklist::Download;
+    score_blocklist::Publish({});
+    aex_update::gCreateProcess=&CreateProcessW;
+    aex_update::gAfterUpdateCheck=nullptr;
+    aex_update::gCheckForUpdates=false;
+    aex_update::gCheckStarted=aex_update::gStartupTaskStarted=0;
+}
+} // namespace blocklist_tests
+
 static LONG CALLBACK Fault(EXCEPTION_POINTERS* fault) {
   if(fault->ExceptionRecord->ExceptionCode!=EXCEPTION_ACCESS_VIOLATION)return EXCEPTION_CONTINUE_SEARCH;
   std::fprintf(stderr,"Leaderboard test fault at RVA %08X (EAX %08X ECX %08X EDX %08X ESI %08X)\n",static_cast<uint32_t>(reinterpret_cast<uintptr_t>(fault->ExceptionRecord->ExceptionAddress)-reinterpret_cast<uintptr_t>(gBase)),fault->ContextRecord->Eax,fault->ContextRecord->Ecx,fault->ContextRecord->Edx,fault->ContextRecord->Esi);
@@ -47,6 +140,13 @@ static int gExpectedType=0,gExpectedFirst=1,gExpectedLast=15;
 static std::array<void*,40> gFriendsVtable{};
 static void** gFriends=gFriendsVtable.data();
 static int gEntries=0,gNotified=0;
+static int gNotifyExpectedRows=-1,gReleased=0;
+static std::vector<uint64_t> gEntryIDs;
+static std::vector<int> gEntryRanks;
+static std::vector<uint64_t> gLookupIDs;
+static int gLookups=0;
+static bool gFailLookup=false;
+static bool gLongNames=false;
 static std::string gName;
 static uint64_t __fastcall Find(void*,void*,const char* name) {++gFinds;gName=name;return kFindCall;}
 static uint64_t __fastcall Create(void*,void*,const char*,int,int) {++gCreates;return 0;}
@@ -56,13 +156,28 @@ static uint64_t __fastcall Upload(void*,void*,uint64_t board,int method,int scor
 static uint64_t __fastcall Download(void*,void*,uint64_t board,int type,int first,int last) {
   ++gDownloads;gUsedBoard=board;Require(type==gExpectedType&&first==gExpectedFirst&&last==gExpectedLast,"Native download range changed");return kDownloadCall;
 }
-static bool __fastcall Entry(void*,void*,uint64_t,int index,void* entry,int32_t*,int) {
-  ++gEntries;At<uint64_t>(entry,0)=123;At<int>(entry,8)=index+1;At<int>(entry,12)=987654;return true;
+static uint64_t __fastcall DownloadUsers(void*,void*,uint64_t board,const uint64_t* users,int count) {
+  Require(board==kBoard&&count>0&&count<=100,"Invalid blocked-rank lookup");
+  ++gLookups;gLookupIDs.assign(users,users+count);return gFailLookup?0:kDownloadCall+1;
 }
-static const char* __fastcall Name(void*,void*,uint64_t) {return "Test player";}
+static bool __fastcall Entry(void*,void*,uint64_t,int index,void* entry,int32_t* details,int count) {
+  ++gEntries;At<uint64_t>(entry,0)=gEntryIDs.empty()?123:gEntryIDs.at(index);
+  const int rank=gEntryRanks.empty()?index+1:gEntryRanks.at(index);
+  At<int>(entry,8)=rank;At<int>(entry,12)=987655-rank;
+  if(count&&details)*details=1000+rank;return true;
+}
+static const char* __fastcall Name(void*,void*,uint64_t) {return gLongNames?"Test player with a name exceeding native small string storage":"Test player";}
 static bool __fastcall UserInfo(void*,void*,uint64_t,bool) {return false;}
-static void __fastcall Notify(void*,void*,const std::string*) {++gNotified;}
-static void __fastcall ReleaseNotify(void*,void*,int) {}
+static void __fastcall Notify(void*,void*,const std::string* name) {
+  ++gNotified;
+  if(gNotifyExpectedRows>=0) {
+    auto* owner=reinterpret_cast<const uint8_t*>(name)-4;
+    const auto* first=At<uint8_t*>(const_cast<uint8_t*>(owner),0x28);
+    const auto* last=At<uint8_t*>(const_cast<uint8_t*>(owner),0x2c);
+    Require((first?static_cast<int>((last-first)/0x40):0)==gNotifyExpectedRows,"UI notified before replacement rows were complete");
+  }
+}
+static void __fastcall ReleaseNotify(void*,void*,int) {++gReleased;}
 static void* __cdecl Context(void*) {return gContext.data();}
 static void __cdecl Register(void* callback,uint64_t call) {gCallback=callback;gCallbackCall=call;}
 static void __cdecl Unregister(void*,uint64_t) {}
@@ -139,12 +254,15 @@ int wmain(int argc,wchar_t** argv) {
   SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,Fault);
   try {
     Require(VerifiedGame(argv[1]),"Unsupported executable hash");
+    blocklist_tests::Run();
     gBase=reinterpret_cast<uint8_t*>(LoadLibraryExW(argv[1],nullptr,DONT_RESOLVE_DLL_REFERENCES));Require(gBase!=nullptr,"Cannot map game");
     online_leaderboards::Verify(gBase);
     // Verify every patch before writing any part of the feature.
     for(const auto site:{online_leaderboards::kViewGate,online_leaderboards::kPostGate,online_leaderboards::kTooltip,online_leaderboards::kDownloadCallback,online_leaderboards::kDownloadCallback+1,
                         online_leaderboards::kReadState,online_leaderboards::kReadState+1,online_leaderboards::kTitleCall,online_leaderboards::kTitleCall+1,
-                        online_leaderboards::kCharacter,online_leaderboards::kCharacter+5}) {
+                        online_leaderboards::kCharacter,online_leaderboards::kCharacter+5,online_leaderboards::kResizeRows,
+                        leaderboard_filter::kStats,leaderboard_filter::kStats+1,leaderboard_filter::kSetCallback,leaderboard_filter::kAssignName,
+                        online_leaderboards::kSetDownloadState}) {
       const uint8_t original=gBase[site],wrong=0xcc;WriteMemory(gBase+site,&wrong,1);
       bool rejected=false;try{online_leaderboards::Install(gBase);}catch(const std::runtime_error&){rejected=true;}
       Require(rejected,"Unexpected instructions accepted");WriteMemory(gBase+site,&original,1);
@@ -180,6 +298,7 @@ int wmain(int argc,wchar_t** argv) {
     JumpTo(gBase,0xe6280,reinterpret_cast<void*>(&std::memcpy));JumpTo(gBase,0xe5a70,reinterpret_cast<void*>(&std::memmove));JumpTo(gBase,0xe6060,reinterpret_cast<void*>(&std::memset));
     gVtable[22]=reinterpret_cast<void*>(&Create);gVtable[23]=reinterpret_cast<void*>(&Find);
     gVtable[28]=reinterpret_cast<void*>(&Download);gVtable[30]=reinterpret_cast<void*>(&Entry);gVtable[31]=reinterpret_cast<void*>(&Upload);gContext[5]=&gStats;
+    gVtable[29]=reinterpret_cast<void*>(&DownloadUsers);
     gFriendsVtable[7]=reinterpret_cast<void*>(&Name);gFriendsVtable[37]=reinterpret_cast<void*>(&UserInfo);gContext[2]=&gFriends;
     const auto context=&Context;WriteMemory(gBase+0x15f400,&context,sizeof(context));
     const auto reg=&Register;WriteMemory(gBase+0x15f3f0,&reg,sizeof(reg));
@@ -321,9 +440,17 @@ int wmain(int argc,wchar_t** argv) {
       const View unrankedCycle[]={earlyTab?View::Top:View::Friends,earlyTab?View::Friends:View::Top};
       for(int step=0;step<6;++step) {
         const View expected=ranked?rankedCycle[step%3]:unrankedCycle[step%2];
+        const bool cached=online_leaderboards::cachedViews[static_cast<size_t>(expected)].ready;
+        const int previousDownloads=gDownloads,previousEntries=gEntries;
         InvokeCharacter(9);Require(Run(online_leaderboards::kReadState)==7,"Tab left online scores");
         Require(online_leaderboards::view==expected&&!online_leaderboards::tabPending,"Tab cycle included the wrong view");
         auto* range=At<int*>(request.bytes.data(),0x60);
+        if(cached) {
+          request.Tick();
+          Require(!range&&gDownloads==previousDownloads&&gEntries==previousEntries&&At<int>(request.bytes.data(),0x34)==0,
+            "Cached Tab view issued a new request or retained loading state");
+          continue;
+        }
         gExpectedType=expected==View::AroundUser?1:(expected==View::Friends?2:0);
         gExpectedFirst=expected==View::AroundUser?-7:1;gExpectedLast=expected==View::AroundUser?7:15;
         Require(range&&range[0]==gExpectedType&&range[1]==gExpectedFirst&&range[2]==gExpectedLast,"View queued the wrong native request/range");
@@ -335,6 +462,7 @@ int wmain(int argc,wchar_t** argv) {
         Require(online_leaderboards::personalRank==(ranked?Rank::Present:Rank::Absent)&&online_leaderboards::view==expected,"Empty friends/top response changed rank availability or view");
       }
       Global<int>(online_leaderboards::kState)=0;Run(online_leaderboards::kReadState);
+      for(const auto& cached:online_leaderboards::cachedViews)Require(!cached.ready&&cached.rows.empty(),"Leaving online scores retained cached rows");
       Require(online_leaderboards::view==View::AroundUser&&online_leaderboards::personalRank==Rank::Unknown&&!online_leaderboards::viewing,"Leaving viewer retained view/rank availability");
       Global<int>(online_leaderboards::kState)=7;Run(online_leaderboards::kReadState);
       Require(online_leaderboards::view==View::AroundUser&&online_leaderboards::personalRank==Rank::Unknown,"New board/mode inherited a previous rank restriction");
@@ -371,6 +499,261 @@ int wmain(int argc,wchar_t** argv) {
       }
     }
     online_leaderboards::viewing=nullptr;
+    // Decode real native rows, filter before the viewer draws them, and let
+    // the native resize/destructor release both short and heap-backed names.
+    const uint64_t blocked=90000000000000001ull,other=90000000000000007ull;
+    gEntryIDs={blocked,other,blocked,blocked+(1ull<<32),other+1,blocked};
+    for(bool longNames:{false,true})for(bool allBlocked:{false,true})for(int type:{0,1,2})
+      for(const char* mode:{"","C","HA","HC","KA","KC"}) {
+      gLongNames=longNames;
+      auto blockedIDs=allBlocked?gEntryIDs:std::vector<uint64_t>{blocked};
+      std::sort(blockedIDs.begin(),blockedIDs.end());score_blocklist::Publish(std::move(blockedIDs));
+      gViewName=std::string("community_A29088")+(*mode?"_":"")+mode;
+      Leaderboard request(gViewName);request.Queue(false,type);
+      gExpectedType=type;gExpectedFirst=type==1?-7:1;gExpectedLast=type==1?7:15;
+      request.Tick();request.Found(true);request.Tick();request.Downloaded(static_cast<int>(gEntryIDs.size()));
+      auto* first=At<uint8_t*>(request.bytes.data(),0x28);auto* last=At<uint8_t*>(request.bytes.data(),0x2c);
+      Require(last-first==(allBlocked?0:3*0x40),"Blocked score rows remained or allowed rows were lost");
+      if(!allBlocked)for(int i=0;i<3;++i) {
+        const int original[]={1,3,4};auto* entry=first+i*0x40;
+        Require(At<uint64_t>(entry,0)==gEntryIDs[original[i]]&&At<int>(entry,8)==original[i]+1&&
+          At<int>(entry,12)==987654-original[i],"Filtering changed SteamID high bits, order, native rank or score");
+        Require(At<std::string>(entry,0x20)==Name(nullptr,nullptr,0),"Filtering corrupted a native player name");
+      }
+      const int downloads=gDownloads;request.Tick();
+      Require(gDownloads==downloads,"Filtering all rows triggered an unranked fallback or another download");
+    }
+    score_blocklist::Publish({});gLongNames=false;
+    {
+      Leaderboard request(gViewName);gViewLeaderboard=request.bytes.data();request.Queue(false);
+      gExpectedType=0;gExpectedFirst=1;gExpectedLast=15;
+      request.Tick();request.Found(true);request.Tick();request.Downloaded(static_cast<int>(gEntryIDs.size()));
+      auto count=[&](){return (At<uint8_t*>(request.bytes.data(),0x2c)-At<uint8_t*>(request.bytes.data(),0x28))/0x40;};
+      Require(count()==6,"Empty blocklist filtered a score");
+      score_blocklist::Publish({blocked});online_leaderboards::viewing=request.bytes.data();leaderboard_filter::Reset();
+      Global<int>(online_leaderboards::kState)=7;Run(online_leaderboards::kReadState);
+      Require(At<void*>(request.bytes.data(),0x60)!=nullptr,"Late blocklist did not queue a fresh filtered view");
+      auto* queued=At<int*>(request.bytes.data(),0x60);Run(online_leaderboards::kReadState);
+      Require(At<int*>(request.bytes.data(),0x60)==queued,"Late blocklist queued more than one refresh");
+      online_leaderboards::viewing=nullptr;
+    }
+    score_blocklist::Publish({});gEntryIDs.clear();
+    leaderboard_filter::Reset();
+    Require(gUploads==uploads&&gCreates==creates,"Blocklist filtering uploaded a score or created a table");
+    std::puts("PASS: blocked SteamID64 rows removed in all six modes and all views; short/long names; all blocked; empty list; late download refresh queued once; no uploads");
+    const auto userForRank=[](int rank){return 90000000100000000ull+static_cast<uint64_t>(rank);};
+    const auto publishRanks=[&](const std::vector<int>& ranks) {
+      std::vector<uint64_t> ids;for(int rank:ranks)ids.push_back(userForRank(rank));
+      std::sort(ids.begin(),ids.end());score_blocklist::Publish(std::move(ids));
+    };
+    const auto page=[&](const std::vector<int>& ranks) {
+      gEntryRanks=ranks;gEntryIDs.clear();for(int rank:ranks)gEntryIDs.push_back(userForRank(rank));
+    };
+    const auto interval=[&](int first,int last) {
+      std::vector<int> ranks;for(int rank=first;rank<=last;++rank)ranks.push_back(rank);page(ranks);
+    };
+    const auto startView=[&](Leaderboard& request,int type) {
+      leaderboard_filter::Reset();online_leaderboards::ClearCache();online_leaderboards::viewing=request.bytes.data();gViewLeaderboard=request.bytes.data();
+      online_leaderboards::view=type==0?View::Top:(type==1?View::AroundUser:View::Friends);
+      Global<int>(online_leaderboards::kState)=7;request.Queue(false,type);
+      gExpectedType=type;gExpectedFirst=type==1?-7:1;gExpectedLast=type==1?7:15;
+      request.Tick();request.Found(true);request.Tick();At<void*>(request.bytes.data(),0x8c)=&notify;
+    };
+    const auto assertRows=[&](Leaderboard& request,const std::vector<int>& originals,const std::vector<int>& blockedRanks,bool top) {
+      auto* first=At<uint8_t*>(request.bytes.data(),0x28);auto* last=At<uint8_t*>(request.bytes.data(),0x2c);
+      Require((first?static_cast<size_t>((last-first)/0x40):0)==originals.size(),"Wrong replacement row count");
+      for(size_t i=0;i<originals.size();++i) {
+        auto* row=first+i*0x40;const int original=originals[i];
+        const int rank=top?static_cast<int>(i)+1:original-static_cast<int>(std::count_if(blockedRanks.begin(),blockedRanks.end(),[&](int blockedRank){return blockedRank<original;}));
+        Require(At<uint64_t>(row,0)==userForRank(original)&&At<int>(row,8)==rank&&At<int>(row,12)==987655-original&&
+          At<int>(row,0x38)==1000+original,"Replacement corrupted identity, filtered rank, score, or reached board");
+        Require(At<std::string>(row,0x20)==Name(nullptr,nullptr,0),"Replacement corrupted native player name");
+      }
+      Require(!At<void*>(request.bytes.data(),0x60)&&At<int>(request.bytes.data(),0x34)==0&&!leaderboard_filter::pending,
+        "Completed replacement retained a request or pending state");
+    };
+    std::vector<int> firstTwenty,firstThirty,sparseRun{1};
+    for(int rank=1;rank<=30;++rank) {
+      if(rank<=20)firstTwenty.push_back(rank);firstThirty.push_back(rank);
+      if(rank>=16)sparseRun.push_back(rank);
+    }
+    for(bool longNames:{false,true})for(const std::vector<int>& excluded:std::vector<std::vector<int>>{{1},{5},{15},{1,5,15,16,18},firstTwenty,firstThirty,sparseRun})
+      for(const char* mode:{"","C","HA","HC","KA","KC"}) {
+      publishRanks(excluded);gLongNames=longNames;
+      gViewName=std::string("community_A29088")+(*mode?"_":"")+mode;
+      Leaderboard request(gViewName);startView(request,0);
+      const int notified=gNotified,released=gReleased,lookups=gLookups;
+      gNotifyExpectedRows=15;interval(1,15);request.Downloaded(15);
+      int attempts=0;
+      while(At<void*>(request.bytes.data(),0x60)) {
+        Require(++attempts<10&&gNotified==notified,"Replacement loop failed to converge or notified UI too early");
+        auto* range=At<int*>(request.bytes.data(),0x60);
+        Require(range[0]==0&&range[1]==1+attempts*15&&range[2]==15+attempts*15,"Replacement did not request the next batch of 15");
+        gExpectedType=range[0];gExpectedFirst=range[1];gExpectedLast=range[2];
+        request.Tick();interval(gExpectedFirst,gExpectedLast);request.Downloaded(static_cast<int>(gEntryRanks.size()));
+      }
+      std::vector<int> expected;
+      for(int rank=1;expected.size()<15;++rank)if(std::find(excluded.begin(),excluded.end(),rank)==excluded.end())expected.push_back(rank);
+      assertRows(request,expected,excluded,true);
+      if(excluded==sparseRun||excluded==firstThirty)Require(attempts==2,"Blocked runs should finish in three score downloads including the initial page");
+      Require(gNotified==notified+1&&gReleased==released+1&&gLookups==lookups,"Replacement notification/release repeated or Top requested unrelated users");
+      const int downloads=gDownloads;Run(online_leaderboards::kReadState);request.Tick();
+      Require(gDownloads==downloads,"Completed filtered view downloaded again on UI tick");
+      online_leaderboards::viewing=nullptr;
+    }
+    std::puts("PASS: replacement batches of 15; exclusions at 1, 5, or 15; blocked 1-30 and 1 plus 16-30 finish in three score downloads; first 15 allowed entries retained; six modes; long names; single final UI notification");
+    for(int total:{0,8,15}) {
+      publishRanks({5});Leaderboard request(gViewName);startView(request,0);
+      const int expected=total-(total>=5);gNotifyExpectedRows=expected;
+      interval(1,(std::min)(15,total));request.Downloaded(static_cast<int>(gEntryRanks.size()));
+      if(total==15) {
+        Require(At<int*>(request.bytes.data(),0x60)[1]==16,"Full last page did not check whether rank 16 exists");
+        gExpectedType=0;gExpectedFirst=16;gExpectedLast=30;request.Tick();page({});request.Downloaded(0);
+      }
+      std::vector<int> originals;for(int rank=1;rank<=total;++rank)if(rank!=5)originals.push_back(rank);
+      assertRows(request,originals,{5},true);online_leaderboards::viewing=nullptr;
+    }
+    std::puts("PASS: empty/short/exactly-15 tables stop at actual end and show every remaining valid score");
+    // Friends contains more than the native 15-row cap. Consume its already
+    // downloaded rows before requesting the blocked users' global positions.
+    {
+      const std::vector<int> excluded={1,6,42,61};publishRanks(excluded);
+      Leaderboard request(gViewName);startView(request,2);gNotifyExpectedRows=15;
+      std::vector<int> friends;for(int rank=3;rank<=60;rank+=3)friends.push_back(rank);page(friends);
+      const int downloads=gDownloads,lookups=gLookups,notified=gNotified;
+      request.Downloaded(static_cast<int>(friends.size()));
+      Require(gLookups==lookups+1&&gCallbackCall==kDownloadCall+1&&gNotified==notified,"Friends did not start one blocked-global-rank lookup");
+      page(excluded);request.Downloaded(static_cast<int>(excluded.size()));
+      std::vector<int> originals;for(int rank:friends)if(rank!=6&&rank!=42&&originals.size()<15)originals.push_back(rank);
+      assertRows(request,originals,excluded,false);Require(gDownloads==downloads,"Friends redownloaded rows already in its result");
+      online_leaderboards::viewing=nullptr;
+    }
+    // Personal view can need several replacements and blocked global ranks
+    // above its window. At the table's end, extend upward to keep 15 entries.
+    for(bool bottom:{false,true}) {
+      const std::vector<int> excluded=bottom?std::vector<int>{1,47,49}:std::vector<int>{1,45,55,56};publishRanks(excluded);
+      Leaderboard request(gViewName);startView(request,1);gNotifyExpectedRows=15;
+      interval(bottom?44:40,bottom?50:54);request.Downloaded(static_cast<int>(gEntryRanks.size()));
+      int attempts=0;
+      while(leaderboard_filter::pending&&!leaderboard_filter::pending->lookup) {
+        Require(++attempts<10,"Personal replacement failed to converge");
+        auto* range=At<int*>(request.bytes.data(),0x60);gExpectedType=range[0];gExpectedFirst=range[1];gExpectedLast=range[2];request.Tick();
+        interval(gExpectedFirst,bottom?(std::min)(gExpectedLast,50):gExpectedLast);request.Downloaded(static_cast<int>(gEntryRanks.size()));
+      }
+      Require(leaderboard_filter::pending&&leaderboard_filter::pending->lookup,"Personal view did not request blocked ranks");
+      page(excluded);request.Downloaded(static_cast<int>(excluded.size()));
+      std::vector<int> originals;for(int rank=bottom?34:40;rank<=(bottom?50:57);++rank)
+        if(std::find(excluded.begin(),excluded.end(),rank)==excluded.end())originals.push_back(rank);
+      assertRows(request,originals,excluded,false);online_leaderboards::viewing=nullptr;
+    }
+    std::puts("PASS: Friends uses all downloaded entries; global rank correction includes blocked nonfriends; personal replacements skip blocked replacements, extend upward at table end, and include blocked ranks above the window");
+    // Large blocklists use Steam's 100-users-per-request limit and reuse its
+    // registered 64-bit callback, including successful empty lookup results.
+    {
+      std::vector<int> excluded;for(int rank=200;rank<325;++rank)excluded.push_back(rank);publishRanks(excluded);
+      Leaderboard request(gViewName);startView(request,1);gNotifyExpectedRows=15;
+      const int lookups=gLookups;interval(40,54);request.Downloaded(15);
+      Require(gLookupIDs.size()==100,"First blocked-rank batch did not contain 100 users");
+      page({});request.Downloaded(0);Require(gLookupIDs.size()==25,"Second blocked-rank batch was not the remaining 25 users");
+      request.Downloaded(0);std::vector<int> originals;for(int rank=40;rank<=54;++rank)originals.push_back(rank);
+      assertRows(request,originals,{},false);Require(gLookups==lookups+2,"Blocked rank batches repeated");online_leaderboards::viewing=nullptr;
+    }
+    for(bool lookupFailure:{false,true}) {
+      publishRanks({1});Leaderboard request(gViewName);startView(request,lookupFailure?1:0);
+      gNotifyExpectedRows=-1;const int notified=gNotified;interval(lookupFailure?40:1,lookupFailure?54:15);request.Downloaded(15);
+      if(!lookupFailure) {gExpectedType=0;gExpectedFirst=16;gExpectedLast=30;request.Tick();}
+      request.Downloaded(0,true);const int downloads=gDownloads;
+      Run(online_leaderboards::kReadState);request.Tick();
+      Require(gNotified==notified+1&&!leaderboard_filter::pending&&!At<void*>(request.bytes.data(),0x60)&&
+        At<int>(request.bytes.data(),0x34)==4&&gDownloads==downloads,"Failed refill/lookup retried forever or did not finish once");
+      online_leaderboards::viewing=nullptr;
+    }
+    {
+      publishRanks({1});Leaderboard request(gViewName);startView(request,0);gNotifyExpectedRows=14;
+      interval(1,15);request.Downloaded(15);gExpectedType=0;gExpectedFirst=16;gExpectedLast=30;request.Tick();
+      interval(1,1);request.Downloaded(1);
+      std::vector<int> originals;for(int rank=2;rank<=15;++rank)originals.push_back(rank);
+      assertRows(request,originals,{1},true);online_leaderboards::viewing=nullptr;
+    }
+    {
+      publishRanks({1});Leaderboard request(gViewName);startView(request,1);gNotifyExpectedRows=15;
+      interval(40,54);request.Downloaded(15);
+      Require(leaderboard_filter::pending&&leaderboard_filter::pending->lookup,"Expected in-flight blocked-rank lookup");
+      online_leaderboards::personalRank=Rank::Present;
+      InvokeCharacter(9);Run(online_leaderboards::kReadState);
+      Require(online_leaderboards::view==View::Friends&&!leaderboard_filter::pending,"Tab did not cancel the previous filtered page");
+      // A late callback before the next native tick must not consume its newly
+      // queued request or revive rows from the previous personal view.
+      interval(1,1);request.Downloaded(1);
+      Require(At<int>(request.bytes.data(),0x34)==0&&At<int*>(request.bytes.data(),0x60)[0]==2,"Late callback consumed the new view request");
+      gExpectedType=2;gExpectedFirst=1;gExpectedLast=15;request.Tick();interval(2,16);request.Downloaded(15);
+      interval(1,1);request.Downloaded(1);
+      std::vector<int> originals;for(int rank=2;rank<=16;++rank)originals.push_back(rank);
+      assertRows(request,originals,{1},false);online_leaderboards::viewing=nullptr;
+    }
+    {
+      publishRanks({1});gFailLookup=true;Leaderboard request(gViewName);startView(request,1);gNotifyExpectedRows=15;
+      interval(40,54);request.Downloaded(15);
+      std::vector<int> originals;for(int rank=40;rank<=54;++rank)originals.push_back(rank);
+      assertRows(request,originals,{},false);gFailLookup=false;online_leaderboards::viewing=nullptr;
+    }
+    // Cached rows retain their already adjusted ranks and owning player names.
+    // Returning to one while another download is in flight cancels that request
+    // without issuing another score download or blocked-user lookup.
+    for(bool longNames:{false,true}) {
+      publishRanks({5});gLongNames=longNames;Leaderboard request(gViewName);startView(request,0);gNotifyExpectedRows=15;
+      interval(1,15);request.Downloaded(15);gExpectedType=0;gExpectedFirst=16;gExpectedLast=30;
+      request.Tick();interval(16,30);request.Downloaded(15);
+      Require(online_leaderboards::cachedViews[static_cast<size_t>(View::Top)].ready,"Completed filtered Top view was not cached");
+      online_leaderboards::personalRank=Rank::Absent;
+      InvokeCharacter(9);Run(online_leaderboards::kReadState);
+      Require(online_leaderboards::view==View::Friends,"Top did not switch to Friends");
+      gExpectedType=2;gExpectedFirst=1;gExpectedLast=15;request.Tick();
+      const int downloads=gDownloads,lookups=gLookups;
+      InvokeCharacter(9);Run(online_leaderboards::kReadState);request.Tick();
+      Require(online_leaderboards::view==View::Top&&gDownloads==downloads&&gLookups==lookups,"Cached Top made another Steam request");
+      std::vector<int> originals;for(int rank=1;rank<=16;++rank)if(rank!=5)originals.push_back(rank);
+      assertRows(request,originals,{5},true);
+      alignas(8) std::array<uint8_t,24> late{};At<uint64_t>(late.data(),0)=kBoard;
+      At<uint64_t>(late.data(),8)=0xabcdef0198765432ull;At<int>(late.data(),16)=1;
+      online_leaderboards::Downloaded(request.bytes.data(),nullptr,late.data(),false);
+      assertRows(request,originals,{5},true);
+      // Empty results are successful completed views too.
+      InvokeCharacter(9);Run(online_leaderboards::kReadState);gExpectedType=2;gExpectedFirst=1;gExpectedLast=15;request.Tick();
+      gNotifyExpectedRows=-1;page({});request.Downloaded(0);
+      const int cachedDownloads=gDownloads,cachedLookups=gLookups;
+      for(int cycle=0;cycle<4;++cycle){InvokeCharacter(9);Run(online_leaderboards::kReadState);request.Tick();}
+      Require(gDownloads==cachedDownloads&&gLookups==cachedLookups,"Completed Top/empty Friends cycle requested data again");
+      Require(online_leaderboards::cachedViews[static_cast<size_t>(View::Friends)].ready,"Empty Friends result was not cached");
+      // A new blocklist invalidates every cached view and refreshes the active one.
+      publishRanks({5,16});Run(online_leaderboards::kReadState);
+      for(const auto& cached:online_leaderboards::cachedViews)Require(!cached.ready,"Blocklist change retained a stale cached view");
+      Require(At<void*>(request.bytes.data(),0x60)!=nullptr,"Blocklist change did not queue a refresh");
+      Global<int>(online_leaderboards::kState)=0;Run(online_leaderboards::kReadState);
+      for(const auto& cached:online_leaderboards::cachedViews)Require(!cached.ready&&cached.rows.empty(),"Leaving retained a completed view");
+      // Simulate the game's normal fresh around-user request on reopening.
+      gNotifyExpectedRows=-1;
+      auto* oldRange=At<void*>(request.bytes.data(),0x60);At<void*>(request.bytes.data(),0x60)=nullptr;std::free(oldRange);
+      request.Queue(false,1);Global<int>(online_leaderboards::kState)=7;Run(online_leaderboards::kReadState);
+      gExpectedType=1;gExpectedFirst=-7;gExpectedLast=7;const int beforeReopen=gDownloads;request.Tick();
+      Require(gDownloads==beforeReopen+1,"Reopening online scores reused cached results");
+      online_leaderboards::viewing=nullptr;
+    }
+    {
+      publishRanks({5});score_blocklist::enabled=false;Leaderboard request(gViewName);startView(request,0);gNotifyExpectedRows=15;
+      const int lookups=gLookups;interval(1,15);request.Downloaded(15);
+      std::vector<int> originals;for(int rank=1;rank<=15;++rank)originals.push_back(rank);
+      assertRows(request,originals,{},true);
+      const int downloads=gDownloads;Run(online_leaderboards::kReadState);request.Tick();
+      Require(gDownloads==downloads&&gLookups==lookups&&!leaderboard_filter::HasBlocklist()&&leaderboard_filter::BlockedIDs().empty(),
+        "FilterScores=0 still filtered, refilled, or looked up blocked users");
+      score_blocklist::enabled=true;online_leaderboards::viewing=nullptr;
+    }
+    gNotifyExpectedRows=-1;gLongNames=false;gEntryIDs.clear();gEntryRanks.clear();score_blocklist::Publish({});leaderboard_filter::Reset();online_leaderboards::ClearCache();
+    Require(gUploads==uploads&&gCreates==creates,"Replacement flow uploaded scores or created tables");
+    std::puts("PASS: 100-user blocked-rank batching; failed/invalid replacement/lookup stops; no-rank-progress guard; Tab cancels old assembly and ignores late callback; no uploads or table creation");
+    std::puts("PASS: completed per-view cache; empty results cached; short/long player names and adjusted ranks restored; in-flight request cancelled; late callback ignored; no repeated downloads/lookups; blocklist invalidation; leaving clears cache and reopening downloads afresh");
+    std::puts("PASS: FilterScores=0 preserves blocked rows and native ranks; no replacement downloads, blocked-user lookups, or automatic filter refresh");
     std::puts("PASS: view hint shown only for a found leaderboard; hidden for missing, IO-failed and pending lookups across all modes/views.");
     std::puts("PASS: native Tab dispatch; ranked default/Friends/Top cycle; unranked Top/Friends cycle; early Tab during rank lookup; other-table/closed-view/IO-failed callbacks; per-view reset; all six mode names; blank/Friends/Top 15 subtitles; 15-row cap; no uploads or table creation.");
     return 0;

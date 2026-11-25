@@ -21,7 +21,7 @@ static std::string LF(std::string text) {
 static void CheckDefaults(const AexConfig& config) {
   Require(!config.skipLongbow&&!config.noScreenTransition&&!config.holdClickFire&&
     !config.launchAngle&&!config.rehabMode&&!config.log&&config.disableDangerousLua&&
-    config.disableAchievementReset&&config.checkForUpdates,"Incorrect requested defaults");
+    config.disableAchievementReset&&config.filterScores&&config.checkForUpdates,"Incorrect requested defaults");
 }
 
 int wmain(int argc,wchar_t** argv) {
@@ -58,6 +58,15 @@ int wmain(int argc,wchar_t** argv) {
       LoadAexConfig(path);Require(Read(path)==migrated,"Repeated migration duplicated an option");
     }
     std::puts("PASS: each missing option gets its default and description; existing values/comments/unknown keys preserved");
+    for(const char* value:{"0","1","invalid","","2","00","-1"}) {
+      const std::string original=std::string("FilterScores = ")+value+" # keep this choice\n";
+      Write(path,original);const auto settings=LoadAexConfig(path);
+      Require(settings.filterScores==(std::string(value)!="0"),"FilterScores must be enabled unless explicitly 0");
+      const auto migrated=Read(path);
+      Require(migrated.compare(0,original.size(),original)==0&&migrated.find("FilterScores = 1\n")==std::string::npos,
+        "Migration overwrote or duplicated existing FilterScores");
+    }
+    std::puts("PASS: FilterScores defaults on; only explicit 0 disables it; existing values preserved by migration");
 
     for(const char* newline:{"\n","\r\n"}) {
       const std::string original=std::string("\xef\xbb\xbf# Custom")+newline+

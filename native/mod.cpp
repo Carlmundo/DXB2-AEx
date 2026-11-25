@@ -234,6 +234,9 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     if(config.disableDangerousLua){InstallDisableDangerousLua(gGame);Log("Dangerous Lua calls and native module loaders disabled; writable io.open modes changed to r.");}
     aex_update::gCheckForUpdates=config.checkForUpdates;
     aex_update::gLoggingEnabled=config.log;
+    score_blocklist::log=&Log;
+    score_blocklist::enabled=config.filterScores;
+    aex_update::gAfterUpdateCheck=config.filterScores?&score_blocklist::StartOnce:nullptr;
     AddVectoredExceptionHandler(1,Fault);
     Log("DX-Ball 2 AEx experimental native grid and board adapter installed.");
   } catch(const std::exception& error) {Log(error.what());return FALSE;}

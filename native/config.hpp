@@ -17,6 +17,7 @@
   X(RehabMode,rehabMode,false,false,"# Unlimited paddles and number-key ball speeds (1 slowest, 0 fastest)\n# Disables local high-score entry and online score submission\n# Saved Rehab games remain ineligible after turning RehabMode off") \
   X(DisableDangerousLua,disableDangerousLua,true,true,"# Disable execution of dangerous lua commands from community content (default=1)") \
   X(DisableAchievementReset,disableAchievementReset,true,true,"# Prevents a \"cheat code\" from resetting Steam achievements (default=1)") \
+  X(FilterScores,filterScores,true,true,"# Filter out scores from known cheaters (default=1)") \
   X(CheckForUpdates,checkForUpdates,true,false,"# Check at startup for AEx updates") \
   X(Log,log,false,false,"# Disable / Enable Logging")
 

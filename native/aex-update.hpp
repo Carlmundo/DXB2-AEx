@@ -15,6 +15,8 @@ inline SRWLOCK gLock=SRWLOCK_INIT;
 inline bool gCheckForUpdates=false;
 inline bool gLoggingEnabled=false;
 inline LONG gCheckStarted=0;
+inline LONG gStartupTaskStarted=0;
+inline void (*gAfterUpdateCheck)(HANDLE)=nullptr;
 inline decltype(&CreateProcessW) gCreateProcess=&CreateProcessW;
 inline HANDLE gReady=nullptr,gInstall=nullptr,gCancel=nullptr;
 inline std::wstring gSignalName;
@@ -101,6 +103,11 @@ inline bool LaunchUpdate(bool check=false) noexcept {
 // HTTP, dialog, process creation, or waiting occurs while holding loader lock.
 inline void CheckForUpdatesOnce() noexcept {
   if(gCheckForUpdates&&InterlockedCompareExchange(&gCheckStarted,1,0)==0)LaunchUpdate(true);
+  if(gAfterUpdateCheck&&InterlockedCompareExchange(&gStartupTaskStarted,1,0)==0) {
+    AcquireSRWLockShared(&gLock);
+    gAfterUpdateCheck(gCheckStarted?gUpdater:nullptr);
+    ReleaseSRWLockShared(&gLock);
+  }
 }
 // Preserve the original intro update arguments and integer return value.
 // Start the helper before its normal five-second splash/input wait.
