@@ -36,10 +36,18 @@ export function makeManifest(binary, listing) {
     {start:0x452680,end:0x4526cc,allocation:0x2094,boundary:0},
     {start:0x452790,end:0x452874,allocation:0x20a0,boundary:-16},
     {start:0x4558d0,end:0x4559cd,allocation:0x209c,boundary:-20},
-    {start:0x455ce0,end:0x456675,allocation:0x21b0,boundary:-228},
+    {start:0x455ce0,end:0x456675,allocation:0x21b0,boundary:-228,handlerCookie:0x549aee},
     {start:0x4587c0,end:0x458a6d,allocation:0x20ac,boundary:-32},
     {start:0x491c60,end:0x491ca3,allocation:0x2098,boundary:-4},
   ];
+  // The board loader's exception handler checks an EH cookie below the stack
+  // allocation. Move that check with the enlarged frame; otherwise a corrupt
+  // board triggers a security fast-fail before its exception can be caught.
+  for(const frame of frames)if(frame.handlerCookie) {
+    const ins=code.find(ins=>ins.va===frame.handlerCookie);
+    if(!ins||!/^mov\s+ecx,dword ptr \[edx\+/.test(ins.asm))throw Error('Unexpected stack exception cookie check');
+    operand(ins,-frame.allocation-0x10,-frame.allocation-0x10-DELTA,4,'expanded stack exception cookie');
+  }
   for(const ins of code) {
     const text=ins.asm;
     const has=n=>new RegExp(`(?<![0-9A-F])0*${n.toString(16)}h`,'i').test(text);

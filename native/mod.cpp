@@ -18,7 +18,7 @@
 #include "charm-spawn.hpp"
 #include "laser-paddle.hpp"
 #include "launch-angle.hpp"
-#include "board-order.hpp"
+#include "board-menu.hpp"
 #include "community-assets.hpp"
 #include "online-leaderboards.hpp"
 #include "rehab-mode.hpp"
@@ -55,6 +55,7 @@ static void* GameAlloc(size_t size) {return reinterpret_cast<void* (__cdecl*)(si
 static int __cdecl DecodeBoard(const void* input,int length,void** output,int* outputLength) noexcept {
   gNormalized=nullptr;
   try {
+    if(board_menu::ReadFailed())throw dxb::FormatError("The file could not be read completely.");
     const auto result=dxb::Normalize(static_cast<const uint8_t*>(input),static_cast<size_t>(length));
     auto* data=GameAlloc(result.bytes.size());if(!data)return 0;
     std::memcpy(data,result.bytes.data(),result.bytes.size());*output=data;*outputLength=static_cast<int>(result.bytes.size());
@@ -65,8 +66,8 @@ static int __cdecl DecodeBoard(const void* input,int length,void** output,int* o
     return 1;
   } catch(const std::exception& error) {
     Log(error.what());
-    // Returning a short invalid payload lets the original loader display its
-    // normal error path even for malformed raw-BDST inputs.
+    // Let the original loader reject and release this buffer. The board menu
+    // catches that failure and includes the filename in its grouped message.
     auto* invalid=GameAlloc(4);if(!invalid)return 0;
     std::memcpy(invalid,"FAIL",4);*output=invalid;*outputLength=4;return 1;
   }
@@ -190,7 +191,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     charm_spawn::Verify(gGame);
     laser_paddle::Verify(gGame,config.holdClickFire);
     if(config.launchAngle)launch_angle::Verify(gGame);
-    board_order::Verify(gGame);
+    board_menu::Verify(gGame);
     community_assets::Verify(gGame);
     online_leaderboards::Verify(gGame);
     if(config.rehabMode)rehab_mode::Verify(gGame);
@@ -218,7 +219,7 @@ BOOL WINAPI DllMain(HINSTANCE instance,DWORD reason,LPVOID) {
     brick_behaviour::Install(gGame);
     charm_spawn::Install(gGame);
     laser_paddle::Install(gGame,config.holdClickFire);
-    board_order::Install(gGame);
+    board_menu::Install(gGame);
     community_assets::Install(gGame);
     online_leaderboards::Install(gGame);
     if(config.rehabMode){rehab_mode::Install(gGame);Log("RehabMode enabled: unlimited paddles, number-key ball speeds, local/online scores disabled; saved sessions remain ineligible.");}

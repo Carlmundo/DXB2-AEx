@@ -46,6 +46,13 @@ int wmain(int argc,wchar_t** argv) {
     aex_update::gCreateProcess=&NoCheckProcess;
     score_blocklist::fetch=&NoBlocklistDownload;
     Require(DllMain(GetModuleHandleW(nullptr),DLL_PROCESS_ATTACH,nullptr)!=FALSE,"Production DLL initialization failed");
+    for(size_t i=0;i<3;i++) {
+      const auto rva=board_menu::kOpenCalls[i];
+      Require(gMapped+rva+5+*reinterpret_cast<int32_t*>(gMapped+rva+1)==board_menu::OpenTarget(i),"Production board error hook missing");
+    }
+    Require(gMapped+board_menu::kLoadCall+5+*reinterpret_cast<int32_t*>(gMapped+board_menu::kLoadCall+1)==reinterpret_cast<uint8_t*>(&board_menu::LoadFromMenu),"Production board exception boundary missing");
+    Require(gMapped[board_menu::kAfterLoad]==0xe9,"Production board error cleanup missing");
+    Require(gMapped+board_menu::kSortCall+5+*reinterpret_cast<int32_t*>(gMapped+board_menu::kSortCall+1)==reinterpret_cast<uint8_t*>(&board_menu::Sort),"Production board-menu scan completion hook missing");
     for(const auto rva:community_assets::kFindCalls)
       Require(gMapped+rva+5+*reinterpret_cast<int32_t*>(gMapped+rva+1)==reinterpret_cast<uint8_t*>(&community_assets::Find),"Production community asset hook missing");
     Require(gCheckLaunches==0,"Update checker created a process while holding loader lock");
