@@ -24,6 +24,7 @@ Windows users can ignore the next additional steps.
 - Stop a specific "cheat code" from being able to reset Steam achievements
 - Use online leaderboards for specific community content
 - Press Tab when viewing online scores to cycle between your rank, Friends and Top 15
+- Filter out scores from known cheaters
 - Fixes:
 	- Online scores could not be viewed before submitting a score for that boardset
 	- Music becoming silent and/or muted notes at lower Master and Music volume settings
@@ -36,6 +37,10 @@ Windows users can ignore the next additional steps.
 		- stayed hidden when changed to an exploding brick by Expand
 	- Reflected laser shots permanently using up ammo after hitting permanent bricks with Thru Brick (under Classic Rules)
 	- Switch bricks being converted into exploding bricks by Expand
+	- Charms spawning inside sealed permanent brick enclosures
+	- Custom brick and background replacements loading when Community Content is disabled
+	- Corrupt/unreadable boardset files causing the game to close
+		- Now shows an error listing the unreadable files, skips them, and loads the remaining boardsets.
 
 You can enable and disable options in `aex.cfg`.
 
@@ -51,6 +56,7 @@ You can enable and disable options in `aex.cfg`.
 		- showing numbers for lines that didn't exist
 		- showing incorrect numbers when scrolling
 		- counter starting at 0
+	- being limited to 2 lines (on Linux)
 
 ### Workshop Helper
 - Fixed the uploaded description being cut off at 253 characters (now supports the full 8000 characters)
